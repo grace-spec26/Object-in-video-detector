@@ -12,7 +12,10 @@ venv/
 *.pt
 *.onnx
 .venv_local/
-.venv_local/
+.venv_cotracker_msam/
+run_logs/
+data/
+*.log
 
 # Python virtual environments
 venv/

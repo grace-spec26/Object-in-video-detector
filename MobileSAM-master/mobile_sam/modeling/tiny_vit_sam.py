@@ -17,7 +17,7 @@ from typing import Tuple
 try:
     from timm.models.layers import DropPath as TimmDropPath, to_2tuple, trunc_normal_
     from timm.models.registry import register_model
-except ModuleNotFoundError:
+except (ImportError, OSError):
     class TimmDropPath(nn.Module):
         def __init__(self, drop_prob=0.):
             super().__init__()
