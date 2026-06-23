@@ -1,0 +1,41 @@
+venv/
+*.pth
+*.pt
+*.onnx
+*.pkl
+*.mp4
+*.avi
+*.zip
+*.tar.gz
+venv/
+*.pth
+*.pt
+*.onnx
+.venv_local/
+.venv_local/
+
+# Python virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store
+
+# Large model files
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Generated project data
+uploads/
+outputs/
+dataset/
+datasets/
+runs/

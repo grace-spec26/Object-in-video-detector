@@ -1,0 +1,16 @@
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/.venv_local/lib/python3.9/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/.venv_local/lib/python3.9/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/.venv_local/lib/python3.9/site-packages/timm/models/registry.py:4: FutureWarning: Importing from timm.models.registry is deprecated, please import via timm.models
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.models", FutureWarning)
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/MobileSAM-master/mobile_sam/modeling/tiny_vit_sam.py:679: UserWarning: Overwriting tiny_vit_5m_224 in registry with mobile_sam.modeling.tiny_vit_sam.tiny_vit_5m_224. This is because the name being registered conflicts with an existing name. Please check if this is not expected.
+  return register_model(fn_wrapper)
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/MobileSAM-master/mobile_sam/modeling/tiny_vit_sam.py:679: UserWarning: Overwriting tiny_vit_11m_224 in registry with mobile_sam.modeling.tiny_vit_sam.tiny_vit_11m_224. This is because the name being registered conflicts with an existing name. Please check if this is not expected.
+  return register_model(fn_wrapper)
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/MobileSAM-master/mobile_sam/modeling/tiny_vit_sam.py:679: UserWarning: Overwriting tiny_vit_21m_224 in registry with mobile_sam.modeling.tiny_vit_sam.tiny_vit_21m_224. This is because the name being registered conflicts with an existing name. Please check if this is not expected.
+  return register_model(fn_wrapper)
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/MobileSAM-master/mobile_sam/modeling/tiny_vit_sam.py:679: UserWarning: Overwriting tiny_vit_21m_384 in registry with mobile_sam.modeling.tiny_vit_sam.tiny_vit_21m_384. This is because the name being registered conflicts with an existing name. Please check if this is not expected.
+  return register_model(fn_wrapper)
+/Users/wanglihang/Desktop/feel_intern/cotracker+MSAM/MobileSAM-master/mobile_sam/modeling/tiny_vit_sam.py:679: UserWarning: Overwriting tiny_vit_21m_512 in registry with mobile_sam.modeling.tiny_vit_sam.tiny_vit_21m_512. This is because the name being registered conflicts with an existing name. Please check if this is not expected.
+  return register_model(fn_wrapper)
