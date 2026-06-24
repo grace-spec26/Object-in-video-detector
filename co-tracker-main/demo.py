@@ -10,12 +10,11 @@ import argparse
 import numpy as np
 
 from PIL import Image
+from cotracker.device import resolve_default_device
 from cotracker.utils.visualizer import Visualizer, read_video_from_path
 from cotracker.predictor import CoTrackerPredictor
 
-DEFAULT_DEVICE = (
-    "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
-)
+DEFAULT_DEVICE = resolve_default_device(torch)
 
 # if DEFAULT_DEVICE == "mps":
 #     os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "1"
