@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Callable, Dict, Optional, Sequence, Tuple
 
 import cv2
@@ -14,6 +15,7 @@ _TRACKING_RESOLUTION_HEIGHTS = {
     "1080P": 1080,
 }
 _MODEL_CACHE = {}
+_LOCAL_COTRACKER_REPO = Path(__file__).resolve().parents[1]
 
 
 def _even(value: int) -> int:
@@ -116,7 +118,11 @@ def get_cached_cotracker_model(
         if loader is None:
             import torch
 
-            loader = lambda: torch.hub.load("facebookresearch/co-tracker", "cotracker3_online")
+            loader = lambda: torch.hub.load(
+                str(_LOCAL_COTRACKER_REPO),
+                "cotracker3_online",
+                source="local",
+            )
 
         model = loader().to(device)
         if hasattr(model, "eval"):

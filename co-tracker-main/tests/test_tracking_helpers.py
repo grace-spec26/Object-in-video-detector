@@ -131,6 +131,38 @@ class TrackingHelpersTest(unittest.TestCase):
         self.assertEqual(first.eval_calls, 1)
         self.assertEqual(third.devices, ["cuda"])
 
+    def test_get_cached_cotracker_model_loads_local_patched_repo_by_default(self):
+        class FakeHub:
+            def __init__(self):
+                self.calls = []
+
+            def load(self, *args, **kwargs):
+                self.calls.append((args, kwargs))
+                return FakeModel()
+
+        class FakeTorchModule:
+            def __init__(self):
+                self.hub = FakeHub()
+
+        fake_torch = FakeTorchModule()
+        original_torch = sys.modules.get("torch")
+        sys.modules["torch"] = fake_torch
+
+        try:
+            model = get_cached_cotracker_model("mps", cache={})
+        finally:
+            if original_torch is None:
+                sys.modules.pop("torch", None)
+            else:
+                sys.modules["torch"] = original_torch
+
+        self.assertEqual(model.devices, ["mps"])
+        self.assertEqual(len(fake_torch.hub.calls), 1)
+        args, kwargs = fake_torch.hub.calls[0]
+        self.assertEqual(args[1], "cotracker3_online")
+        self.assertEqual(kwargs, {"source": "local"})
+        self.assertTrue((Path(args[0]) / "hubconf.py").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()
