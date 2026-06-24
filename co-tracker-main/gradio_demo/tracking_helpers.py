@@ -6,6 +6,7 @@ import numpy as np
 
 TRACKING_RESOLUTION_OPTIONS = ("1080P", "720P", "640P", "520P")
 DEFAULT_TRACKING_RESOLUTION = "520P"
+TRACKING_FRAME_STRIDE = 2
 _TRACKING_RESOLUTION_HEIGHTS = {
     "520P": 520,
     "640P": 640,
@@ -49,6 +50,47 @@ def resize_video_for_tracking(video: np.ndarray, resolution_label: str) -> np.nd
         for frame in video_array
     ]
     return np.stack(resized_frames, axis=0).astype(video_array.dtype, copy=False)
+
+
+def subsample_video_tensor(video_tensor, stride: int = TRACKING_FRAME_STRIDE):
+    """Keep one frame every stride frames on the batched video time axis."""
+    if stride <= 0:
+        raise ValueError("stride must be positive.")
+    return video_tensor[:, ::stride]
+
+
+def map_frame_index_to_sampled(
+    frame_index: int,
+    sampled_frame_count: int,
+    stride: int = TRACKING_FRAME_STRIDE,
+) -> int:
+    """Map an original frame index to the previous available sampled frame index."""
+    if stride <= 0:
+        raise ValueError("stride must be positive.")
+    if sampled_frame_count <= 0:
+        raise ValueError("sampled_frame_count must be positive.")
+    return min(max(int(frame_index) // stride, 0), sampled_frame_count - 1)
+
+
+def expand_sampled_time_axis(
+    sampled_values: np.ndarray,
+    total_frames: int,
+    stride: int = TRACKING_FRAME_STRIDE,
+    axis: int = 1,
+) -> np.ndarray:
+    """Expand sampled predictions back to the original frame count."""
+    if stride <= 0:
+        raise ValueError("stride must be positive.")
+    if total_frames <= 0:
+        raise ValueError("total_frames must be positive.")
+
+    sampled_array = np.asarray(sampled_values)
+    sampled_length = sampled_array.shape[axis]
+    if sampled_length <= 0:
+        raise ValueError("sampled_values must contain at least one sampled frame.")
+
+    take_indices = np.minimum(np.arange(total_frames) // stride, sampled_length - 1)
+    return np.take(sampled_array, take_indices, axis=axis)
 
 
 def resolve_torch_device(torch_module) -> str:

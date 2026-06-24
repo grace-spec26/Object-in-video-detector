@@ -8,10 +8,13 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gradio_demo"))
 
 from tracking_helpers import (  # noqa: E402
+    expand_sampled_time_axis,
     get_cached_cotracker_model,
     get_tracking_resolution,
+    map_frame_index_to_sampled,
     resolve_torch_device,
     resize_video_for_tracking,
+    subsample_video_tensor,
 )
 
 
@@ -77,6 +80,35 @@ class TrackingHelpersTest(unittest.TestCase):
 
         self.assertEqual(resized.shape, (2, 640, 1138, 3))
         self.assertEqual(resized.dtype, np.uint8)
+
+    def test_subsample_video_tensor_keeps_every_second_frame_on_time_axis(self):
+        video_tensor = np.arange(1 * 5 * 1 * 1 * 1).reshape(1, 5, 1, 1, 1)
+
+        sampled = subsample_video_tensor(video_tensor, stride=2)
+
+        np.testing.assert_array_equal(sampled[:, :, 0, 0, 0], np.array([[0, 2, 4]]))
+
+    def test_map_frame_index_to_sampled_uses_previous_available_frame(self):
+        self.assertEqual(map_frame_index_to_sampled(0, sampled_frame_count=3, stride=2), 0)
+        self.assertEqual(map_frame_index_to_sampled(1, sampled_frame_count=3, stride=2), 0)
+        self.assertEqual(map_frame_index_to_sampled(5, sampled_frame_count=3, stride=2), 2)
+
+    def test_expand_sampled_time_axis_restores_full_frame_count(self):
+        sampled_tracks = np.array(
+            [
+                [[10.0, 11.0], [20.0, 21.0], [30.0, 31.0]],
+                [[40.0, 41.0], [50.0, 51.0], [60.0, 61.0]],
+            ],
+            dtype=np.float32,
+        )
+
+        expanded = expand_sampled_time_axis(sampled_tracks, total_frames=6, stride=2, axis=1)
+
+        self.assertEqual(expanded.shape, (2, 6, 2))
+        np.testing.assert_array_equal(expanded[:, 0], sampled_tracks[:, 0])
+        np.testing.assert_array_equal(expanded[:, 1], sampled_tracks[:, 0])
+        np.testing.assert_array_equal(expanded[:, 4], sampled_tracks[:, 2])
+        np.testing.assert_array_equal(expanded[:, 5], sampled_tracks[:, 2])
 
     def test_get_cached_cotracker_model_loads_once_per_device(self):
         loaded_models = []

@@ -28,10 +28,14 @@ from export_helpers import (
 )
 from tracking_helpers import (
     DEFAULT_TRACKING_RESOLUTION,
+    TRACKING_FRAME_STRIDE,
     TRACKING_RESOLUTION_OPTIONS,
+    expand_sampled_time_axis,
     get_cached_cotracker_model,
+    map_frame_index_to_sampled,
     resolve_torch_device,
     resize_video_for_tracking,
+    subsample_video_tensor,
 )
 
 
@@ -370,13 +374,21 @@ def track(
     
     device = resolve_torch_device(torch)
     dtype = torch.float if device == "cuda" else torch.float
+    total_frame_count = video_input.shape[0]
+    sampled_frame_count = (total_frame_count + TRACKING_FRAME_STRIDE - 1) // TRACKING_FRAME_STRIDE
     input_height, input_width = video_input.shape[1:3]
 
     # Convert query points to tensor, normalize to input resolution
     if tracking_mode!='grid':
         query_points_tensor = []
         for frame_points in query_points:
-            query_points_tensor.extend(frame_points)
+            for x, y, frame_index in frame_points:
+                sampled_frame_index = map_frame_index_to_sampled(
+                    frame_index,
+                    sampled_frame_count=sampled_frame_count,
+                    stride=TRACKING_FRAME_STRIDE,
+                )
+                query_points_tensor.append((x, y, sampled_frame_index))
         
         query_points_tensor = torch.tensor(query_points_tensor).float()
         query_points_tensor *= torch.tensor([
@@ -388,6 +400,7 @@ def track(
         query_points_tensor = query_points_tensor[:, :, [0, 2, 1]] # tyx -> txy
 
     video_input = torch.tensor(video_input).unsqueeze(0).to(device, dtype)
+    video_input = subsample_video_tensor(video_input, TRACKING_FRAME_STRIDE)
 
     model = get_cached_cotracker_model(device)
 
@@ -418,8 +431,20 @@ def track(
             queries=queries, 
             add_support_grid=add_support_grid
         )  # B T N 2,  B T N 1
-    tracks = (pred_tracks * torch.tensor([video_preview.shape[2], video_preview.shape[1]]).to(device) / torch.tensor([input_width, input_height]).to(device))[0].permute(1, 0, 2).cpu().numpy()
-    pred_occ = pred_visibility[0].permute(1, 0).cpu().numpy()
+    sampled_tracks = (pred_tracks * torch.tensor([video_preview.shape[2], video_preview.shape[1]]).to(device) / torch.tensor([input_width, input_height]).to(device))[0].permute(1, 0, 2).cpu().numpy()
+    sampled_occ = pred_visibility[0].permute(1, 0).cpu().numpy()
+    tracks = expand_sampled_time_axis(
+        sampled_tracks,
+        total_frames=total_frame_count,
+        stride=TRACKING_FRAME_STRIDE,
+        axis=1,
+    )
+    pred_occ = expand_sampled_time_axis(
+        sampled_occ,
+        total_frames=total_frame_count,
+        stride=TRACKING_FRAME_STRIDE,
+        axis=1,
+    )
 
     # make color array
     colors = []
