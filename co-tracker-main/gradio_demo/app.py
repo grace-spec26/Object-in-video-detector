@@ -20,6 +20,13 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from export_helpers import (
+    DEFAULT_COORDINATES_DIR,
+    DEFAULT_FRAMES_DIR,
+    store_coordinate_arrays,
+    store_original_frames,
+)
+
 
 def patch_gradio_predict_body():
     """Allow Gradio 3.35 request models to run with Pydantic 2."""
@@ -335,6 +342,10 @@ def preprocess_video_input(video_path):
         gr.update(interactive=interactive),
         gr.update(interactive=interactive),
         gr.update(interactive=True),
+        None,
+        gr.update(interactive=False),
+        gr.update(interactive=False),
+        "",
     )
 
 
@@ -346,8 +357,9 @@ def track(
     query_points_color, 
     query_count, 
 ):
+    has_selected_points = query_count > 0
     tracking_mode = 'selected'
-    if query_count == 0: 
+    if not has_selected_points:
         tracking_mode='grid'
     
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -419,7 +431,63 @@ def track(
 
     mediapy.write_video(video_file_path, painted_video, fps=video_fps)
 
-    return video_file_path
+    export_status = (
+        "Tracking complete. Frames can now be stored."
+        if not has_selected_points
+        else "Tracking complete. Frames and selected-point coordinates can now be stored."
+    )
+    return (
+        video_file_path,
+        tracks if has_selected_points else None,
+        gr.update(interactive=True),
+        gr.update(interactive=has_selected_points),
+        export_status,
+    )
+
+
+def store_frames_from_state(video_frames):
+    if video_frames is None:
+        message = "Submit and track a video before storing frames."
+        gr.Warning(message, duration=5)
+        return message
+
+    try:
+        written_paths = store_original_frames(video_frames, DEFAULT_FRAMES_DIR)
+    except Exception as exc:
+        message = f"Failed to store frames: {exc}"
+        gr.Warning(message, duration=5)
+        return message
+
+    return f"Stored {len(written_paths)} original frames in {DEFAULT_FRAMES_DIR}."
+
+
+def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks):
+    if selected_tracks is None:
+        message = "Track selected points before storing coordinates."
+        gr.Warning(message, duration=5)
+        return message
+    if video_frames is None or video_preview_array is None:
+        message = "Submit and track a video before storing coordinates."
+        gr.Warning(message, duration=5)
+        return message
+
+    try:
+        written_paths = store_coordinate_arrays(
+            tracks=selected_tracks,
+            output_dir=DEFAULT_COORDINATES_DIR,
+            source_hw=video_preview_array.shape[1:3],
+            target_hw=video_frames.shape[1:3],
+        )
+    except Exception as exc:
+        message = f"Failed to store coordinates: {exc}"
+        gr.Warning(message, duration=5)
+        return message
+
+    frame_files = max(0, len(written_paths) - 1)
+    return (
+        f"Stored selected-point coordinates for {frame_files} frames in "
+        f"{DEFAULT_COORDINATES_DIR}."
+    )
 
 
 with gr.Blocks() as demo:
@@ -433,6 +501,7 @@ with gr.Blocks() as demo:
     query_points_color = gr.State([])
     is_tracked_query = gr.State([])
     query_count = gr.State(0)
+    selected_tracks = gr.State(None)
 
     gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
     gr.Markdown("<div style='text-align: left;'> \
@@ -465,12 +534,12 @@ with gr.Blocks() as demo:
             teddy = os.path.join(os.path.dirname(__file__), "videos", "teddy.mp4")
             backpack = os.path.join(os.path.dirname(__file__), "videos", "backpack.mp4")
 
-
-            gr.Examples(examples=[bear, apple, paragliding, paragliding_launch, cat, pillow, teddy, backpack], 
-                        inputs = [
-                            video_in
-                        ],
-                        )
+            if os.environ.get("COTRACKER_DISABLE_EXAMPLES") != "1":
+                gr.Examples(examples=[bear, apple, paragliding, paragliding_launch, cat, pillow, teddy, backpack],
+                            inputs = [
+                                video_in
+                            ],
+                            )
 
 
     gr.Markdown("## Second step: Simply click \"Track\" to track a grid of points or select query points on the video before clicking")
@@ -501,6 +570,17 @@ with gr.Blocks() as demo:
                 autoplay=True,
                 loop=True,
             )
+            with gr.Row():
+                store_frames_button = gr.Button("Store Frames", interactive=False)
+                store_coordinates_button = gr.Button(
+                    "Store Coordinates of Tracked Object",
+                    interactive=False,
+                )
+            export_status = gr.Textbox(
+                label="Export Status",
+                interactive=False,
+                lines=3,
+            )
 
     
 
@@ -524,6 +604,10 @@ with gr.Blocks() as demo:
             clear_frame,
             clear_all,
             track_button,
+            selected_tracks,
+            store_frames_button,
+            store_coordinates_button,
+            export_status,
         ],
         queue = False
     )
@@ -625,8 +709,36 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             output_video,
+            selected_tracks,
+            store_frames_button,
+            store_coordinates_button,
+            export_status,
         ],
         queue = True,
+    )
+
+    store_frames_button.click(
+        fn = store_frames_from_state,
+        inputs = [
+            video,
+        ],
+        outputs = [
+            export_status,
+        ],
+        queue = False,
+    )
+
+    store_coordinates_button.click(
+        fn = store_coordinates_from_state,
+        inputs = [
+            video,
+            video_preview,
+            selected_tracks,
+        ],
+        outputs = [
+            export_status,
+        ],
+        queue = False,
     )
 
     
