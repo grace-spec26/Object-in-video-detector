@@ -355,6 +355,62 @@ def get_grid(
     return grid
 
 
+def _trilinear_sampler_5d_border(input, coords, align_corners=True):
+    """MPS-compatible border-padded sampler for 5D tensors.
+
+    Args:
+        input: Tensor shaped (B, C, T, H, W).
+        coords: Tensor shaped (B, ..., 3) in (t, x, y) order.
+    """
+    B, C, T, H, W = input.shape
+    output_shape = coords.shape[1:-1]
+
+    t, x, y = coords.unbind(dim=-1)
+    if not align_corners:
+        t = t - 0.5
+        x = x - 0.5
+        y = y - 0.5
+
+    t = t.clamp(0, T - 1)
+    x = x.clamp(0, W - 1)
+    y = y.clamp(0, H - 1)
+
+    t0 = torch.floor(t).to(torch.long)
+    x0 = torch.floor(x).to(torch.long)
+    y0 = torch.floor(y).to(torch.long)
+    t1 = (t0 + 1).clamp(max=T - 1)
+    x1 = (x0 + 1).clamp(max=W - 1)
+    y1 = (y0 + 1).clamp(max=H - 1)
+
+    wt = (t - t0.to(t.dtype)).unsqueeze(1)
+    wx = (x - x0.to(x.dtype)).unsqueeze(1)
+    wy = (y - y0.to(y.dtype)).unsqueeze(1)
+
+    input_flat = input.reshape(B, C, T * H * W)
+
+    def gather(t_idx, y_idx, x_idx):
+        flat_idx = (t_idx * H * W + y_idx * W + x_idx).reshape(B, 1, -1)
+        flat_idx = flat_idx.expand(-1, C, -1)
+        return input_flat.gather(2, flat_idx).reshape(B, C, *output_shape)
+
+    v000 = gather(t0, y0, x0)
+    v001 = gather(t0, y0, x1)
+    v010 = gather(t0, y1, x0)
+    v011 = gather(t0, y1, x1)
+    v100 = gather(t1, y0, x0)
+    v101 = gather(t1, y0, x1)
+    v110 = gather(t1, y1, x0)
+    v111 = gather(t1, y1, x1)
+
+    c00 = v000 * (1 - wx) + v001 * wx
+    c01 = v010 * (1 - wx) + v011 * wx
+    c10 = v100 * (1 - wx) + v101 * wx
+    c11 = v110 * (1 - wx) + v111 * wx
+    c0 = c00 * (1 - wy) + c01 * wy
+    c1 = c10 * (1 - wy) + c11 * wy
+    return c0 * (1 - wt) + c1 * wt
+
+
 def bilinear_sampler(input, coords, align_corners=True, padding_mode="border"):
     r"""Sample a tensor using bilinear interpolation
 
@@ -401,6 +457,9 @@ def bilinear_sampler(input, coords, align_corners=True, padding_mode="border"):
     sizes = input.shape[2:]
 
     assert len(sizes) in [2, 3]
+
+    if len(sizes) == 3 and padding_mode == "border":
+        return _trilinear_sampler_5d_border(input, coords, align_corners=align_corners)
 
     if len(sizes) == 3:
         # t x y -> x y t to match dimensions T H W in grid_sample

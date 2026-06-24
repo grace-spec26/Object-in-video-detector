@@ -46,6 +46,20 @@ class TestBilinearSampler(unittest.TestCase):
         self._test5d(align_corners=True)
         self._test5d(align_corners=False)
 
+    def test5d_mps_without_fallback(self):
+        if not torch.backends.mps.is_available():
+            self.skipTest("MPS is not available")
+
+        T, H, W = 3, 4, 5
+        input_cpu = torch.randn(H * W).view(1, 1, H, W).float()
+        input_cpu = torch.stack([input_cpu, input_cpu + 1, input_cpu + 2], dim=2)
+        coords_cpu = torch.meshgrid(torch.arange(T), torch.arange(W), torch.arange(H))
+        coords_cpu = torch.stack(coords_cpu, dim=-1).float().permute(0, 2, 1, 3)[None]
+
+        sampled_input = bilinear_sampler(input_cpu.to("mps"), coords_cpu.to("mps"))
+
+        torch.testing.assert_close(input_cpu, sampled_input.cpu())
+
 
 # run the test
 unittest.main()

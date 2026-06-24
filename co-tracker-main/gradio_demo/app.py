@@ -3,6 +3,8 @@
 # for such an amazing Gradio demo.
 
 import os
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "0"
+
 import sys
 import uuid
 
@@ -19,6 +21,25 @@ import random
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
+
+from export_helpers import (
+    DEFAULT_COORDINATES_DIR,
+    DEFAULT_FRAMES_DIR,
+    store_coordinate_arrays,
+    store_original_frames,
+)
+from tracking_helpers import (
+    DEFAULT_TRACKING_RESOLUTION,
+    TRACKING_FRAME_STRIDE,
+    TRACKING_RESOLUTION_OPTIONS,
+    expand_sampled_time_axis,
+    get_cached_cotracker_model,
+    get_online_chunk_start_indices,
+    map_frame_index_to_sampled,
+    resolve_torch_device,
+    resize_video_for_tracking,
+    subsample_video_tensor,
+)
 
 
 def patch_gradio_predict_body():
@@ -192,7 +213,6 @@ def paint_point_track(
 
 
 PREVIEW_WIDTH = 768 # Width of the preview video
-VIDEO_INPUT_RESO = (384, 512) # Resolution of the input video
 POINT_SIZE = 4 # Size of the query point in the preview video
 FRAME_LIMIT = 300 # Limit the number of frames to process
 
@@ -295,7 +315,7 @@ def choose_frame(frame_num, video_preview_array):
     return video_preview_array[int(frame_num)]
 
 
-def preprocess_video_input(video_path):
+def preprocess_video_input(video_path, tracking_resolution):
     video_arr = mediapy.read_video(video_path)
     video_fps = video_arr.metadata.fps
     num_frames = video_arr.shape[0]
@@ -309,7 +329,7 @@ def preprocess_video_input(video_path):
     new_height, new_width = int(PREVIEW_WIDTH * height / width), PREVIEW_WIDTH
 
     preview_video = mediapy.resize_video(video_arr, (new_height, new_width))
-    input_video = mediapy.resize_video(video_arr, VIDEO_INPUT_RESO)
+    input_video = resize_video_for_tracking(video_arr, tracking_resolution)
 
     preview_video = np.array(preview_video)
     input_video = np.array(input_video)
@@ -335,6 +355,10 @@ def preprocess_video_input(video_path):
         gr.update(interactive=interactive),
         gr.update(interactive=interactive),
         gr.update(interactive=True),
+        None,
+        gr.update(interactive=False),
+        gr.update(interactive=False),
+        "",
     )
 
 
@@ -346,22 +370,32 @@ def track(
     query_points_color, 
     query_count, 
 ):
+    has_selected_points = query_count > 0
     tracking_mode = 'selected'
-    if query_count == 0: 
+    if not has_selected_points:
         tracking_mode='grid'
     
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = resolve_torch_device(torch)
     dtype = torch.float if device == "cuda" else torch.float
+    total_frame_count = video_input.shape[0]
+    sampled_frame_count = (total_frame_count + TRACKING_FRAME_STRIDE - 1) // TRACKING_FRAME_STRIDE
+    input_height, input_width = video_input.shape[1:3]
 
     # Convert query points to tensor, normalize to input resolution
     if tracking_mode!='grid':
         query_points_tensor = []
         for frame_points in query_points:
-            query_points_tensor.extend(frame_points)
+            for x, y, frame_index in frame_points:
+                sampled_frame_index = map_frame_index_to_sampled(
+                    frame_index,
+                    sampled_frame_count=sampled_frame_count,
+                    stride=TRACKING_FRAME_STRIDE,
+                )
+                query_points_tensor.append((x, y, sampled_frame_index))
         
         query_points_tensor = torch.tensor(query_points_tensor).float()
         query_points_tensor *= torch.tensor([
-            VIDEO_INPUT_RESO[1], VIDEO_INPUT_RESO[0], 1
+            input_width, input_height, 1
         ]) / torch.tensor([
             [video_preview.shape[2], video_preview.shape[1], 1]
         ])
@@ -369,9 +403,9 @@ def track(
         query_points_tensor = query_points_tensor[:, :, [0, 2, 1]] # tyx -> txy
 
     video_input = torch.tensor(video_input).unsqueeze(0).to(device, dtype)
+    video_input = subsample_video_tensor(video_input, TRACKING_FRAME_STRIDE)
 
-    model = torch.hub.load("facebookresearch/co-tracker", "cotracker3_online")
-    model = model.to(device)
+    model = get_cached_cotracker_model(device)
 
     video_input = video_input.permute(0, 1, 4, 2, 3)
     if tracking_mode=='grid':
@@ -393,15 +427,27 @@ def track(
 
     model(video_chunk=video_input, is_first_step=True, grid_size=0, queries=queries, add_support_grid=add_support_grid)
     # 
-    for ind in range(0, video_input.shape[1] - model.step, model.step):
+    for ind in get_online_chunk_start_indices(video_input.shape[1], model.step):
         pred_tracks, pred_visibility = model(
             video_chunk=video_input[:, ind : ind + model.step * 2],
             grid_size=0, 
             queries=queries, 
             add_support_grid=add_support_grid
         )  # B T N 2,  B T N 1
-    tracks = (pred_tracks * torch.tensor([video_preview.shape[2], video_preview.shape[1]]).to(device) / torch.tensor([VIDEO_INPUT_RESO[1], VIDEO_INPUT_RESO[0]]).to(device))[0].permute(1, 0, 2).cpu().numpy()
-    pred_occ = pred_visibility[0].permute(1, 0).cpu().numpy()
+    sampled_tracks = (pred_tracks * torch.tensor([video_preview.shape[2], video_preview.shape[1]]).to(device) / torch.tensor([input_width, input_height]).to(device))[0].permute(1, 0, 2).cpu().numpy()
+    sampled_occ = pred_visibility[0].permute(1, 0).cpu().numpy()
+    tracks = expand_sampled_time_axis(
+        sampled_tracks,
+        total_frames=total_frame_count,
+        stride=TRACKING_FRAME_STRIDE,
+        axis=1,
+    )
+    pred_occ = expand_sampled_time_axis(
+        sampled_occ,
+        total_frames=total_frame_count,
+        stride=TRACKING_FRAME_STRIDE,
+        axis=1,
+    )
 
     # make color array
     colors = []
@@ -419,7 +465,63 @@ def track(
 
     mediapy.write_video(video_file_path, painted_video, fps=video_fps)
 
-    return video_file_path
+    export_status = (
+        "Tracking complete. Frames can now be stored."
+        if not has_selected_points
+        else "Tracking complete. Frames and selected-point coordinates can now be stored."
+    )
+    return (
+        video_file_path,
+        tracks if has_selected_points else None,
+        gr.update(interactive=True),
+        gr.update(interactive=has_selected_points),
+        export_status,
+    )
+
+
+def store_frames_from_state(video_frames):
+    if video_frames is None:
+        message = "Submit and track a video before storing frames."
+        gr.Warning(message, duration=5)
+        return message
+
+    try:
+        written_paths = store_original_frames(video_frames, DEFAULT_FRAMES_DIR)
+    except Exception as exc:
+        message = f"Failed to store frames: {exc}"
+        gr.Warning(message, duration=5)
+        return message
+
+    return f"Stored {len(written_paths)} original frames in {DEFAULT_FRAMES_DIR}."
+
+
+def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks):
+    if selected_tracks is None:
+        message = "Track selected points before storing coordinates."
+        gr.Warning(message, duration=5)
+        return message
+    if video_frames is None or video_preview_array is None:
+        message = "Submit and track a video before storing coordinates."
+        gr.Warning(message, duration=5)
+        return message
+
+    try:
+        written_paths = store_coordinate_arrays(
+            tracks=selected_tracks,
+            output_dir=DEFAULT_COORDINATES_DIR,
+            source_hw=video_preview_array.shape[1:3],
+            target_hw=video_frames.shape[1:3],
+        )
+    except Exception as exc:
+        message = f"Failed to store coordinates: {exc}"
+        gr.Warning(message, duration=5)
+        return message
+
+    frame_files = max(0, len(written_paths) - 1)
+    return (
+        f"Stored selected-point coordinates for {frame_files} frames in "
+        f"{DEFAULT_COORDINATES_DIR}."
+    )
 
 
 with gr.Blocks() as demo:
@@ -433,6 +535,7 @@ with gr.Blocks() as demo:
     query_points_color = gr.State([])
     is_tracked_query = gr.State([])
     query_count = gr.State(0)
+    selected_tracks = gr.State(None)
 
     gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
     gr.Markdown("<div style='text-align: left;'> \
@@ -451,6 +554,12 @@ with gr.Blocks() as demo:
 
         with gr.Accordion("Your video input", open=True) as video_in_drawer:
             video_in = gr.Video(label="Video Input", format="mp4")
+            tracking_resolution = gr.Dropdown(
+                choices=list(TRACKING_RESOLUTION_OPTIONS),
+                value=DEFAULT_TRACKING_RESOLUTION,
+                label="Tracking Resolution",
+                interactive=True,
+            )
             submit = gr.Button("Submit", scale=0)
 
             import os
@@ -465,12 +574,12 @@ with gr.Blocks() as demo:
             teddy = os.path.join(os.path.dirname(__file__), "videos", "teddy.mp4")
             backpack = os.path.join(os.path.dirname(__file__), "videos", "backpack.mp4")
 
-
-            gr.Examples(examples=[bear, apple, paragliding, paragliding_launch, cat, pillow, teddy, backpack], 
-                        inputs = [
-                            video_in
-                        ],
-                        )
+            if os.environ.get("COTRACKER_DISABLE_EXAMPLES") != "1":
+                gr.Examples(examples=[bear, apple, paragliding, paragliding_launch, cat, pillow, teddy, backpack],
+                            inputs = [
+                                video_in
+                            ],
+                            )
 
 
     gr.Markdown("## Second step: Simply click \"Track\" to track a grid of points or select query points on the video before clicking")
@@ -501,12 +610,23 @@ with gr.Blocks() as demo:
                 autoplay=True,
                 loop=True,
             )
+            with gr.Row():
+                store_frames_button = gr.Button("Store Frames", interactive=False)
+                store_coordinates_button = gr.Button(
+                    "Store Coordinates of Tracked Object",
+                    interactive=False,
+                )
+            export_status = gr.Textbox(
+                label="Export Status",
+                interactive=False,
+                lines=3,
+            )
 
     
 
     submit.click(
         fn = preprocess_video_input, 
-        inputs = [video_in], 
+        inputs = [video_in, tracking_resolution],
         outputs = [
             video,
             video_preview,
@@ -524,6 +644,10 @@ with gr.Blocks() as demo:
             clear_frame,
             clear_all,
             track_button,
+            selected_tracks,
+            store_frames_button,
+            store_coordinates_button,
+            export_status,
         ],
         queue = False
     )
@@ -625,8 +749,36 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             output_video,
+            selected_tracks,
+            store_frames_button,
+            store_coordinates_button,
+            export_status,
         ],
-        queue = True,
+        queue = False,
+    )
+
+    store_frames_button.click(
+        fn = store_frames_from_state,
+        inputs = [
+            video,
+        ],
+        outputs = [
+            export_status,
+        ],
+        queue = False,
+    )
+
+    store_coordinates_button.click(
+        fn = store_coordinates_from_state,
+        inputs = [
+            video,
+            video_preview,
+            selected_tracks,
+        ],
+        outputs = [
+            export_status,
+        ],
+        queue = False,
     )
 
     
