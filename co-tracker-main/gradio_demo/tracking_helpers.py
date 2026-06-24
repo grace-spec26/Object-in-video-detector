@@ -51,6 +51,18 @@ def resize_video_for_tracking(video: np.ndarray, resolution_label: str) -> np.nd
     return np.stack(resized_frames, axis=0).astype(video_array.dtype, copy=False)
 
 
+def resolve_torch_device(torch_module) -> str:
+    """Prefer CUDA, then Apple MPS, then CPU for CoTracker inference."""
+    if torch_module.cuda.is_available():
+        return "cuda"
+
+    mps_backend = getattr(getattr(torch_module, "backends", None), "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+
+    return "cpu"
+
+
 def get_cached_cotracker_model(
     device: str,
     cache: Optional[Dict[str, object]] = None,

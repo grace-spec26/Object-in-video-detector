@@ -30,6 +30,7 @@ from tracking_helpers import (
     DEFAULT_TRACKING_RESOLUTION,
     TRACKING_RESOLUTION_OPTIONS,
     get_cached_cotracker_model,
+    resolve_torch_device,
     resize_video_for_tracking,
 )
 
@@ -367,7 +368,7 @@ def track(
     if not has_selected_points:
         tracking_mode='grid'
     
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = resolve_torch_device(torch)
     dtype = torch.float if device == "cuda" else torch.float
     input_height, input_width = video_input.shape[1:3]
 
