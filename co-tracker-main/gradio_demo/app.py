@@ -3,6 +3,8 @@
 # for such an amazing Gradio demo.
 
 import os
+os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "0"
+
 import sys
 import uuid
 
