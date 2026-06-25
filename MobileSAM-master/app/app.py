@@ -637,6 +637,8 @@ with gr.Blocks(
             batch_padding_ratio,
         ],
         outputs=[batch_status, batch_frames_download, batch_masks_download],
+        queue=True,
+        show_progress="full",
     )
 
     def clear():
@@ -658,4 +660,5 @@ with gr.Blocks(
     demo.load(None, None, None, queue=False, js=point_click_js)
 
 if __name__ == "__main__":
+    demo.queue()
     demo.launch(server_name="127.0.0.1", server_port=int(os.environ.get("PORT", "8080")))
