@@ -1,4 +1,5 @@
 import argparse
+import html
 import json
 import shutil
 from pathlib import Path
@@ -382,7 +383,36 @@ def _progress_iter(items: Sequence[Path], progress: Optional[Any], desc: str) ->
     return items
 
 
-def run_coordinate_prompt_folders(
+def format_coordinate_progress_html(completed: int, total: int, message: str = "Ready") -> str:
+    safe_total = max(int(total), 0)
+    safe_completed = max(0, int(completed))
+    if safe_total > 0:
+        safe_completed = min(safe_completed, safe_total)
+        percent = int(round((safe_completed / safe_total) * 100))
+    else:
+        percent = 0
+
+    safe_message = html.escape(str(message))
+    return (
+        '<div class="coordinate-progress" '
+        'style="width: 100%; padding: 10px 0 2px 0;">'
+        '<div style="display: flex; justify-content: space-between; '
+        'font-size: 14px; margin-bottom: 6px; color: #374151;">'
+        f"<span>{safe_message}</span>"
+        f"<span>{safe_completed} / {safe_total}</span>"
+        "</div>"
+        '<div style="height: 14px; width: 100%; background: #e5e7eb; '
+        'border-radius: 999px; overflow: hidden;">'
+        f'<div style="height: 100%; width: {percent}%; '
+        'background: linear-gradient(90deg, #2563eb, #16a34a); '
+        'border-radius: 999px; transition: width 160ms ease;"></div>'
+        "</div>"
+        f'<div style="font-size: 12px; margin-top: 4px; color: #6b7280;">{percent}%</div>'
+        "</div>"
+    )
+
+
+def iter_coordinate_prompt_folder_steps(
     frames_dir: Path,
     coordinates_dir: Path,
     output_root: Path = DEFAULT_RAW_MASK_DATA_DIR,
@@ -394,8 +424,7 @@ def run_coordinate_prompt_folders(
     padding_ratio: float = 0.15,
     score_threshold: float = 0.0,
     visible_only: bool = True,
-    progress: Optional[Any] = None,
-) -> Dict[str, Any]:
+) -> Iterable[Dict[str, Any]]:
     frames_dir = Path(frames_dir)
     coordinates_dir = Path(coordinates_dir)
     output_root = Path(output_root)
@@ -433,13 +462,15 @@ def run_coordinate_prompt_folders(
         predictor = load_predictor(checkpoint=checkpoint, device=device)
 
     total = len(selected_frame_paths)
-    for frame_index, frame_path in enumerate(
-        _progress_iter(selected_frame_paths, progress, desc="MobileSAM frames"),
-        start=1,
-    ):
-        if progress is not None and not hasattr(progress, "tqdm") and callable(progress):
-            progress((frame_index - 1) / max(total, 1), desc="MobileSAM frames")
+    yield {
+        "stage": "starting",
+        "completed": 0,
+        "total": total,
+        "message": f"Starting MobileSAM for {total} frame(s)",
+        "result": None,
+    }
 
+    for frame_index, frame_path in enumerate(selected_frame_paths, start=1):
         copied_frame_path = frames_output_dir / frame_path.name
         shutil.copy2(frame_path, copied_frame_path)
 
@@ -454,13 +485,17 @@ def run_coordinate_prompt_folders(
             visible_only=visible_only,
         )
 
-    if progress is not None and not hasattr(progress, "tqdm") and callable(progress):
-        progress(1.0, desc="Packaging downloads")
+        yield {
+            "stage": "processing",
+            "completed": frame_index,
+            "total": total,
+            "message": f"Processed {frame_path.name}",
+            "result": None,
+        }
 
     frames_zip = _make_zip_archive(frames_output_dir, output_root / "frames.zip")
     masks_zip = _make_zip_archive(masks_output_dir, output_root / "mask.zip")
-
-    return {
+    result = {
         "processed_frames": len(selected_frame_paths),
         "frame_paths": selected_frame_paths,
         "frames_dir": frames_output_dir,
@@ -469,6 +504,55 @@ def run_coordinate_prompt_folders(
         "frames_zip": frames_zip,
         "masks_zip": masks_zip,
     }
+
+    yield {
+        "stage": "done",
+        "completed": total,
+        "total": total,
+        "message": f"Completed {total} frame(s)",
+        "result": result,
+    }
+
+
+def run_coordinate_prompt_folders(
+    frames_dir: Path,
+    coordinates_dir: Path,
+    output_root: Path = DEFAULT_RAW_MASK_DATA_DIR,
+    predictor=None,
+    checkpoint: Optional[Path] = None,
+    device: Optional[str] = None,
+    target_fps: float = 5.0,
+    source_fps: float = 30.0,
+    padding_ratio: float = 0.15,
+    score_threshold: float = 0.0,
+    visible_only: bool = True,
+    progress: Optional[Any] = None,
+) -> Dict[str, Any]:
+    last_update = None
+    for update in iter_coordinate_prompt_folder_steps(
+        frames_dir=frames_dir,
+        coordinates_dir=coordinates_dir,
+        output_root=output_root,
+        predictor=predictor,
+        checkpoint=checkpoint,
+        device=device,
+        target_fps=target_fps,
+        source_fps=source_fps,
+        padding_ratio=padding_ratio,
+        score_threshold=score_threshold,
+        visible_only=visible_only,
+    ):
+        last_update = update
+        if progress is not None and callable(progress):
+            progress(
+                (int(update["completed"]), int(update["total"])),
+                desc=str(update["message"]),
+            )
+
+    if last_update and last_update.get("result"):
+        return last_update["result"]
+
+    raise RuntimeError("MobileSAM coordinate folder processing did not complete.")
 
 
 def run_directory(

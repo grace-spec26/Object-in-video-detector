@@ -12,6 +12,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mobilesam_coordinate_wrapper import (  # noqa: E402
     build_augmented_prompt_json,
+    format_coordinate_progress_html,
+    iter_coordinate_prompt_folder_steps,
     prepare_coordinate_prompt_json,
     run_coordinate_prompt_folders,
     select_frames_for_target_fps,
@@ -154,6 +156,54 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertTrue(result["frames_zip"].exists())
             self.assertTrue(result["masks_zip"].exists())
             self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0])
+
+    def test_iter_coordinate_prompt_folder_steps_yields_per_frame_updates(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            frames_dir = tmp_path / "data" / "frames"
+            coordinates_dir = tmp_path / "data" / "coordinates"
+            output_root = tmp_path / "raw-mask-data"
+            frames_dir.mkdir(parents=True)
+            coordinates_dir.mkdir(parents=True)
+
+            for index in range(12):
+                Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8)).save(
+                    frames_dir / f"frame_{index:06d}.png"
+                )
+                (coordinates_dir / f"frame_{index:06d}.json").write_text(
+                    json.dumps([[1.0, 1.0], [2.0, 2.0]]),
+                    encoding="utf-8",
+                )
+
+            updates = list(
+                iter_coordinate_prompt_folder_steps(
+                    frames_dir=frames_dir,
+                    coordinates_dir=coordinates_dir,
+                    output_root=output_root,
+                    predictor=FakePredictor(),
+                    target_fps=5,
+                    source_fps=30,
+                )
+            )
+
+            self.assertEqual([update["completed"] for update in updates], [0, 1, 2, 2])
+            self.assertEqual([update["total"] for update in updates], [2, 2, 2, 2])
+            self.assertEqual(updates[0]["stage"], "starting")
+            self.assertEqual(updates[-1]["stage"], "done")
+            self.assertTrue(updates[-1]["result"]["frames_zip"].exists())
+            self.assertTrue(updates[-1]["result"]["masks_zip"].exists())
+
+    def test_format_coordinate_progress_html_renders_visible_bar(self):
+        html = format_coordinate_progress_html(
+            completed=1,
+            total=4,
+            message="Processing frame_000006.png",
+        )
+
+        self.assertIn("coordinate-progress", html)
+        self.assertIn("width: 25%", html)
+        self.assertIn("1 / 4", html)
+        self.assertIn("Processing frame_000006.png", html)
 
 
 if __name__ == "__main__":

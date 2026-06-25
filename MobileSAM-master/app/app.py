@@ -18,7 +18,8 @@ from mobile_sam import SamAutomaticMaskGenerator, SamPredictor, sam_model_regist
 from PIL import Image, ImageDraw
 from mobilesam_coordinate_wrapper import (
     DEFAULT_RAW_MASK_DATA_DIR,
-    run_coordinate_prompt_folders,
+    format_coordinate_progress_html,
+    iter_coordinate_prompt_folder_steps,
 )
 from utils.tools_gradio import fast_process
 
@@ -304,7 +305,6 @@ def run_coordinate_folder_batch(
     coordinate_folder,
     target_fps,
     padding_ratio,
-    progress=gr.Progress(),
 ):
     try:
         frames_dir = resolve_folder_path(frame_folder, PROJECT_ROOT / "data" / "frames")
@@ -312,7 +312,8 @@ def run_coordinate_folder_batch(
             coordinate_folder,
             PROJECT_ROOT / "data" / "coordinates",
         )
-        result = run_coordinate_prompt_folders(
+        final_result = None
+        for update in iter_coordinate_prompt_folder_steps(
             frames_dir=frames_dir,
             coordinates_dir=coordinates_dir,
             output_root=DEFAULT_RAW_MASK_DATA_DIR,
@@ -320,20 +321,35 @@ def run_coordinate_folder_batch(
             target_fps=float(target_fps),
             source_fps=30.0,
             padding_ratio=float(padding_ratio),
-            progress=progress,
-        )
-    except Exception as exc:
-        return f"MobileSAM batch failed: {exc}", None, None
+        ):
+            result = update.get("result")
+            progress_html = format_coordinate_progress_html(
+                completed=update["completed"],
+                total=update["total"],
+                message=update["message"],
+            )
+            if result:
+                final_result = result
+                status = (
+                    "Processed "
+                    f"{result['processed_frames']} frame(s). "
+                    f"Frames: {result['frames_dir']} | "
+                    f"Augmented prompts: {result['coordinates_dir']} | "
+                    f"Masked pictures: {result['masks_dir']}"
+                )
+                yield status, progress_html, str(result["frames_zip"]), str(result["masks_zip"])
+            else:
+                yield update["message"], progress_html, None, None
 
-    return (
-        "Processed "
-        f"{result['processed_frames']} frame(s). "
-        f"Frames: {result['frames_dir']} | "
-        f"Augmented prompts: {result['coordinates_dir']} | "
-        f"Masked pictures: {result['masks_dir']}",
-        str(result["frames_zip"]),
-        str(result["masks_zip"]),
-    )
+        if final_result is None:
+            raise RuntimeError("MobileSAM did not produce an output result.")
+    except Exception as exc:
+        yield (
+            f"MobileSAM batch failed: {exc}",
+            format_coordinate_progress_html(0, 1, "Failed"),
+            None,
+            None,
+        )
 
 
 point_click_js = """
@@ -450,6 +466,10 @@ batch_coordinate_folder = gr.Textbox(
 batch_target_fps = gr.Number(label="target_fps", value=5)
 batch_padding_ratio = gr.Number(label="Negative padding ratio", value=0.15)
 batch_status = gr.Textbox(label="Status", interactive=False)
+batch_progress_html = gr.HTML(
+    value=format_coordinate_progress_html(0, 1, "Ready"),
+    label="Progress",
+)
 batch_frames_download = gr.File(label="Download raw-mask-data/frames")
 batch_masks_download = gr.File(label="Download raw-mask-data/mask")
 point_click_payload = gr.Textbox(
@@ -588,6 +608,7 @@ with gr.Blocks(
                 )
 
         batch_status.render()
+        batch_progress_html.render()
         with gr.Row():
             batch_frames_download.render()
             batch_masks_download.render()
@@ -636,7 +657,12 @@ with gr.Blocks(
             batch_target_fps,
             batch_padding_ratio,
         ],
-        outputs=[batch_status, batch_frames_download, batch_masks_download],
+        outputs=[
+            batch_status,
+            batch_progress_html,
+            batch_frames_download,
+            batch_masks_download,
+        ],
         queue=True,
         show_progress="full",
     )
