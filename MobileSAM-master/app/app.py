@@ -1,13 +1,25 @@
 import os
 import json
+import sys
+from pathlib import Path
 
 import gradio as gr
 from gradio import data_classes as gradio_data_classes
 from gradio import networking as gradio_networking
 import numpy as np
 import torch
+
+MOBILE_SAM_ROOT = Path(__file__).resolve().parents[1]
+PROJECT_ROOT = MOBILE_SAM_ROOT.parent
+if str(MOBILE_SAM_ROOT) not in sys.path:
+    sys.path.insert(0, str(MOBILE_SAM_ROOT))
+
 from mobile_sam import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
 from PIL import Image, ImageDraw
+from mobilesam_coordinate_wrapper import (
+    DEFAULT_RAW_MASK_DATA_DIR,
+    run_coordinate_prompt_folders,
+)
 from utils.tools_gradio import fast_process
 
 # Most of our demo code is from [FastSAM Demo](https://huggingface.co/spaces/An-619/FastSAM). Huge thanks for AN-619.
@@ -32,7 +44,7 @@ gradio_networking.url_ok = lambda _: True
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load the pre-trained model
-sam_checkpoint = "../weights/mobile_sam.pt"
+sam_checkpoint = str(MOBILE_SAM_ROOT / "weights" / "mobile_sam.pt")
 model_type = "vit_t"
 
 mobile_sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
@@ -260,6 +272,70 @@ def reset_points_on_upload(image):
     return image, image, None, ""
 
 
+def resolve_folder_path(folder_value, default_path):
+    if not folder_value:
+        return default_path
+
+    path = Path(str(folder_value)).expanduser()
+    if path.is_absolute():
+        candidates = [path]
+    else:
+        candidates = [
+            Path.cwd() / path,
+            PROJECT_ROOT / path,
+            MOBILE_SAM_ROOT / path,
+        ]
+
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+
+    for candidate in candidates:
+        if candidate.name in {"frame", "coordinate"}:
+            plural_fallback = candidate.with_name(f"{candidate.name}s")
+            if plural_fallback.exists():
+                return plural_fallback
+
+    return candidates[0]
+
+
+def run_coordinate_folder_batch(
+    frame_folder,
+    coordinate_folder,
+    target_fps,
+    padding_ratio,
+    progress=gr.Progress(),
+):
+    try:
+        frames_dir = resolve_folder_path(frame_folder, PROJECT_ROOT / "data" / "frames")
+        coordinates_dir = resolve_folder_path(
+            coordinate_folder,
+            PROJECT_ROOT / "data" / "coordinates",
+        )
+        result = run_coordinate_prompt_folders(
+            frames_dir=frames_dir,
+            coordinates_dir=coordinates_dir,
+            output_root=DEFAULT_RAW_MASK_DATA_DIR,
+            predictor=predictor,
+            target_fps=float(target_fps),
+            source_fps=30.0,
+            padding_ratio=float(padding_ratio),
+            progress=progress,
+        )
+    except Exception as exc:
+        return f"MobileSAM batch failed: {exc}", None, None
+
+    return (
+        "Processed "
+        f"{result['processed_frames']} frame(s). "
+        f"Frames: {result['frames_dir']} | "
+        f"Augmented prompts: {result['coordinates_dir']} | "
+        f"Masked pictures: {result['masks_dir']}",
+        str(result["frames_zip"]),
+        str(result["masks_zip"]),
+    )
+
+
 point_click_js = """
 () => {
   const setNativeValue = (element, value) => {
@@ -363,6 +439,19 @@ status_text_p = gr.Textbox(
     interactive=False,
     show_label=False,
 )
+batch_frame_folder = gr.Textbox(
+    label="Frame folder",
+    value=str(PROJECT_ROOT / "data" / "frames"),
+)
+batch_coordinate_folder = gr.Textbox(
+    label="Coordinate folder",
+    value=str(PROJECT_ROOT / "data" / "coordinates"),
+)
+batch_target_fps = gr.Number(label="target_fps", value=5)
+batch_padding_ratio = gr.Number(label="Negative padding ratio", value=0.15)
+batch_status = gr.Textbox(label="Status", interactive=False)
+batch_frames_download = gr.File(label="Download raw-mask-data/frames")
+batch_masks_download = gr.File(label="Download raw-mask-data/mask")
 point_click_payload = gr.Textbox(
     label="Point click payload",
     interactive=False,
@@ -485,6 +574,24 @@ with gr.Blocks(
                 # Description
                 gr.Markdown(description_p)
 
+    with gr.Tab("Coordinate folders"):
+        with gr.Row():
+            with gr.Column():
+                batch_frame_folder.render()
+                batch_coordinate_folder.render()
+            with gr.Column():
+                batch_target_fps.render()
+                batch_padding_ratio.render()
+                batch_process_btn = gr.Button(
+                    "Run MobileSAM from coordinate folders",
+                    variant="primary",
+                )
+
+        batch_status.render()
+        with gr.Row():
+            batch_frames_download.render()
+            batch_masks_download.render()
+
     upload_img_p.upload(
         reset_points_on_upload,
         inputs=upload_img_p,
@@ -520,6 +627,16 @@ with gr.Blocks(
         segment_with_points,
         inputs=[cond_img_p, original_img_p],
         outputs=[segm_img_p, cond_img_p, status_text_p],
+    )
+    batch_process_btn.click(
+        run_coordinate_folder_batch,
+        inputs=[
+            batch_frame_folder,
+            batch_coordinate_folder,
+            batch_target_fps,
+            batch_padding_ratio,
+        ],
+        outputs=[batch_status, batch_frames_download, batch_masks_download],
     )
 
     def clear():
