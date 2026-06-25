@@ -1,7 +1,10 @@
 import os
 import json
 import sys
+import threading
 from pathlib import Path
+
+os.environ.setdefault("GRADIO_SKIP_PYI_GENERATION", "1")
 
 import gradio as gr
 from gradio import data_classes as gradio_data_classes
@@ -300,18 +303,49 @@ def resolve_folder_path(folder_value, default_path):
     return candidates[0]
 
 
-def run_coordinate_folder_batch(
+coordinate_batch_state_lock = threading.Lock()
+coordinate_batch_state = {
+    "running": False,
+    "status": "Ready",
+    "progress_html": format_coordinate_progress_html(0, 1, "Ready"),
+    "frames_zip": None,
+    "masks_zip": None,
+}
+
+
+def set_coordinate_batch_state(**updates):
+    with coordinate_batch_state_lock:
+        coordinate_batch_state.update(updates)
+
+
+def get_coordinate_batch_outputs():
+    with coordinate_batch_state_lock:
+        state = dict(coordinate_batch_state)
+    return (
+        state.get("status") or "Ready",
+        state.get("progress_html") or format_coordinate_progress_html(0, 1, "Ready"),
+        state.get("frames_zip"),
+        state.get("masks_zip"),
+    )
+
+
+def _run_coordinate_folder_batch_worker(
     frame_folder,
     coordinate_folder,
     target_fps,
     padding_ratio,
 ):
     print("[MobileSAM coordinate folders] request received", flush=True)
-    yield (
-        "Initializing MobileSAM coordinate folder run",
-        format_coordinate_progress_html(0, 1, "Initializing MobileSAM coordinate folder run"),
-        None,
-        None,
+    set_coordinate_batch_state(
+        running=True,
+        status="Initializing MobileSAM coordinate folder run",
+        progress_html=format_coordinate_progress_html(
+            0,
+            1,
+            "Initializing MobileSAM coordinate folder run",
+        ),
+        frames_zip=None,
+        masks_zip=None,
     )
     try:
         frames_dir = resolve_folder_path(frame_folder, PROJECT_ROOT / "data" / "frames")
@@ -325,11 +359,11 @@ def run_coordinate_folder_batch(
             f"target_fps={target_fps} padding_ratio={padding_ratio}",
             flush=True,
         )
-        yield (
-            "Scanning input folders",
-            format_coordinate_progress_html(0, 1, "Scanning input folders"),
-            None,
-            None,
+        set_coordinate_batch_state(
+            status="Scanning input folders",
+            progress_html=format_coordinate_progress_html(0, 1, "Scanning input folders"),
+            frames_zip=None,
+            masks_zip=None,
         )
         final_result = None
         for update in iter_coordinate_prompt_folder_steps(
@@ -362,20 +396,71 @@ def run_coordinate_folder_batch(
                     f"Augmented prompts: {result['coordinates_dir']} | "
                     f"Masked pictures: {result['masks_dir']}"
                 )
-                yield status, progress_html, str(result["frames_zip"]), str(result["masks_zip"])
+                set_coordinate_batch_state(
+                    running=False,
+                    status=status,
+                    progress_html=progress_html,
+                    frames_zip=str(result["frames_zip"]),
+                    masks_zip=str(result["masks_zip"]),
+                )
             else:
-                yield update["message"], progress_html, None, None
+                set_coordinate_batch_state(
+                    status=update["message"],
+                    progress_html=progress_html,
+                    frames_zip=None,
+                    masks_zip=None,
+                )
 
         if final_result is None:
             raise RuntimeError("MobileSAM did not produce an output result.")
     except Exception as exc:
         print(f"[MobileSAM coordinate folders] failed: {exc}", flush=True)
-        yield (
-            f"MobileSAM batch failed: {exc}",
-            format_coordinate_progress_html(0, 1, "Failed"),
-            None,
-            None,
+        set_coordinate_batch_state(
+            running=False,
+            status=f"MobileSAM batch failed: {exc}",
+            progress_html=format_coordinate_progress_html(0, 1, "Failed"),
+            frames_zip=None,
+            masks_zip=None,
         )
+
+
+def start_coordinate_folder_batch(
+    frame_folder,
+    coordinate_folder,
+    target_fps,
+    padding_ratio,
+):
+    with coordinate_batch_state_lock:
+        if coordinate_batch_state.get("running"):
+            return (
+                "A MobileSAM coordinate folder run is already active.",
+                coordinate_batch_state["progress_html"],
+                coordinate_batch_state.get("frames_zip"),
+                coordinate_batch_state.get("masks_zip"),
+            )
+        coordinate_batch_state.update(
+            running=True,
+            status="Starting MobileSAM coordinate folder worker",
+            progress_html=format_coordinate_progress_html(
+                0,
+                1,
+                "Starting MobileSAM coordinate folder worker",
+            ),
+            frames_zip=None,
+            masks_zip=None,
+        )
+
+    worker = threading.Thread(
+        target=_run_coordinate_folder_batch_worker,
+        args=(frame_folder, coordinate_folder, target_fps, padding_ratio),
+        daemon=True,
+    )
+    worker.start()
+    return get_coordinate_batch_outputs()
+
+
+def poll_coordinate_folder_batch():
+    return get_coordinate_batch_outputs()
 
 
 point_click_js = """
@@ -635,6 +720,7 @@ with gr.Blocks(
 
         batch_status.render()
         batch_progress_html.render()
+        batch_progress_timer = gr.Timer(0.5)
         with gr.Row():
             batch_frames_download.render()
             batch_masks_download.render()
@@ -676,7 +762,7 @@ with gr.Blocks(
         outputs=[segm_img_p, cond_img_p, status_text_p],
     )
     batch_process_btn.click(
-        run_coordinate_folder_batch,
+        start_coordinate_folder_batch,
         inputs=[
             batch_frame_folder,
             batch_coordinate_folder,
@@ -689,8 +775,19 @@ with gr.Blocks(
             batch_frames_download,
             batch_masks_download,
         ],
-        queue=True,
-        show_progress="minimal",
+        queue=False,
+        show_progress="hidden",
+    )
+    batch_progress_timer.tick(
+        poll_coordinate_folder_batch,
+        outputs=[
+            batch_status,
+            batch_progress_html,
+            batch_frames_download,
+            batch_masks_download,
+        ],
+        queue=False,
+        show_progress="hidden",
     )
 
     def clear():
