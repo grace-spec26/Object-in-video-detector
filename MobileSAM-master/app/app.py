@@ -306,11 +306,30 @@ def run_coordinate_folder_batch(
     target_fps,
     padding_ratio,
 ):
+    print("[MobileSAM coordinate folders] request received", flush=True)
+    yield (
+        "Initializing MobileSAM coordinate folder run",
+        format_coordinate_progress_html(0, 1, "Initializing MobileSAM coordinate folder run"),
+        None,
+        None,
+    )
     try:
         frames_dir = resolve_folder_path(frame_folder, PROJECT_ROOT / "data" / "frames")
         coordinates_dir = resolve_folder_path(
             coordinate_folder,
             PROJECT_ROOT / "data" / "coordinates",
+        )
+        print(
+            "[MobileSAM coordinate folders] "
+            f"frames_dir={frames_dir} coordinates_dir={coordinates_dir} "
+            f"target_fps={target_fps} padding_ratio={padding_ratio}",
+            flush=True,
+        )
+        yield (
+            "Scanning input folders",
+            format_coordinate_progress_html(0, 1, "Scanning input folders"),
+            None,
+            None,
         )
         final_result = None
         for update in iter_coordinate_prompt_folder_steps(
@@ -328,6 +347,12 @@ def run_coordinate_folder_batch(
                 total=update["total"],
                 message=update["message"],
             )
+            print(
+                "[MobileSAM coordinate folders] "
+                f"{update['stage']} {update['completed']}/{update['total']}: "
+                f"{update['message']}",
+                flush=True,
+            )
             if result:
                 final_result = result
                 status = (
@@ -344,6 +369,7 @@ def run_coordinate_folder_batch(
         if final_result is None:
             raise RuntimeError("MobileSAM did not produce an output result.")
     except Exception as exc:
+        print(f"[MobileSAM coordinate folders] failed: {exc}", flush=True)
         yield (
             f"MobileSAM batch failed: {exc}",
             format_coordinate_progress_html(0, 1, "Failed"),
@@ -664,7 +690,7 @@ with gr.Blocks(
             batch_masks_download,
         ],
         queue=True,
-        show_progress="full",
+        show_progress="minimal",
     )
 
     def clear():
