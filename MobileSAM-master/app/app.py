@@ -441,8 +441,36 @@ def resolve_user_folder_path(folder_value, default_path):
 
     path = Path(raw_value).expanduser()
     if path.is_absolute():
-        return path
-    return PROJECT_ROOT / path
+        resolved_path = path
+    else:
+        resolved_path = PROJECT_ROOT / path
+
+    if resolved_path.exists():
+        return resolved_path
+
+    folder_aliases = {
+        "frame": "frames",
+        "frames": "frame",
+        "coordinate": "coordinates",
+        "coordinates": "coordinate",
+    }
+    alias_name = folder_aliases.get(resolved_path.name)
+    if alias_name:
+        alias_path = resolved_path.with_name(alias_name)
+        if alias_path.exists():
+            return alias_path
+
+    return resolved_path
+
+
+def parse_float_input(value, field_name):
+    raw_value = str(value).strip()
+    if "=" in raw_value:
+        raw_value = raw_value.split("=", 1)[1].strip()
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be a number, got {value!r}") from exc
 
 
 coordinate_batch_state_lock = threading.Lock()
@@ -504,6 +532,8 @@ def _run_coordinate_folder_batch_worker(
             f"target_fps={target_fps} padding_ratio={padding_ratio}",
             flush=True,
         )
+        target_fps_value = parse_float_input(target_fps, "target_fps")
+        padding_ratio_value = parse_float_input(padding_ratio, "padding_ratio")
         set_coordinate_batch_state(
             status="Scanning input folders",
             progress_html=format_coordinate_progress_html(0, 1, "Scanning input folders"),
@@ -516,9 +546,9 @@ def _run_coordinate_folder_batch_worker(
             frames_dir=frames_dir,
             coordinates_dir=coordinates_dir,
             output_root=DEFAULT_RAW_MASK_DATA_DIR,
-            target_fps=float(target_fps),
+            target_fps=target_fps_value,
             source_fps=30.0,
-            padding_ratio=float(padding_ratio),
+            padding_ratio=padding_ratio_value,
         ):
             result = update.get("result")
             progress_html = format_coordinate_progress_html(

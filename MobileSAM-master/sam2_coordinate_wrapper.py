@@ -447,6 +447,17 @@ def iter_sam2_coordinate_prompt_folder_steps(
         target_fps=float(target_fps),
         source_fps=float(source_fps),
     )
+    total = len(selected_frame_paths)
+    yield {
+        "stage": "scanned",
+        "completed": 0,
+        "total": total,
+        "message": (
+            f"Selected {total} frame(s) from {len(frame_paths)} input frame(s) "
+            f"at target_fps={float(target_fps):g}"
+        ),
+        "result": None,
+    }
     missing_json = [
         coordinates_dir / f"{frame_path.stem}.json"
         for frame_path in selected_frame_paths
@@ -466,8 +477,25 @@ def iter_sam2_coordinate_prompt_folder_steps(
     else:
         processed_coordinates_dir.mkdir(parents=True, exist_ok=True)
 
+    yield {
+        "stage": "prepared-output",
+        "completed": 0,
+        "total": total,
+        "message": (
+            f"Prepared outputs in {output_root}: frames, coordinates, mask, masked_frames"
+        ),
+        "result": None,
+    }
+
     resolved_device = None
     if predictor is None:
+        yield {
+            "stage": "loading-model",
+            "completed": 0,
+            "total": total,
+            "message": "Loading SAM2 model",
+            "result": None,
+        }
         predictor, resolved_device = load_sam2_predictor(
             checkpoint=checkpoint,
             config=config,
@@ -476,7 +504,6 @@ def iter_sam2_coordinate_prompt_folder_steps(
     else:
         resolved_device = device or "provided predictor"
 
-    total = len(selected_frame_paths)
     yield {
         "stage": "starting",
         "completed": 0,

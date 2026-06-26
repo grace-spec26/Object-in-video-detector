@@ -232,6 +232,54 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             )
             self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0])
 
+    def test_iter_sam2_coordinate_prompt_folder_steps_respects_target_fps(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            frames_dir = tmp_path / "data" / "frames"
+            coordinates_dir = tmp_path / "data" / "coordinates"
+            output_root = tmp_path / "raw-mask-data"
+            frames_dir.mkdir(parents=True)
+            coordinates_dir.mkdir(parents=True)
+
+            for index in range(12):
+                Image.fromarray(np.zeros((6, 6, 3), dtype=np.uint8)).save(
+                    frames_dir / f"frame_{index:06d}.png"
+                )
+                (coordinates_dir / f"frame_{index:06d}.json").write_text(
+                    json.dumps(
+                        {
+                            "objects": [
+                                {
+                                    "class_id": 1,
+                                    "point_coords": [[1.0, 1.0], [3.0, 3.0]],
+                                    "point_labels": [1, 1],
+                                }
+                            ]
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+
+            updates = list(
+                iter_sam2_coordinate_prompt_folder_steps(
+                    frames_dir=frames_dir,
+                    coordinates_dir=coordinates_dir,
+                    output_root=output_root,
+                    predictor=FakeSAM2Predictor(),
+                    target_fps=5,
+                    source_fps=30,
+                )
+            )
+
+            stages = [update["stage"] for update in updates]
+            result = updates[-1]["result"]
+            self.assertEqual(stages[:3], ["scanned", "prepared-output", "starting"])
+            self.assertEqual(result["processed_frames"], 2)
+            self.assertTrue((output_root / "frames" / "frame_000000.png").exists())
+            self.assertTrue((output_root / "frames" / "frame_000006.png").exists())
+            self.assertFalse((output_root / "frames" / "frame_000001.png").exists())
+            self.assertTrue((output_root / "coordinates" / "frame_000006.json").exists())
+
 
 if __name__ == "__main__":
     unittest.main()
