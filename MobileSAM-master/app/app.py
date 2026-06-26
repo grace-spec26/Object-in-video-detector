@@ -6,6 +6,7 @@ from pathlib import Path
 
 os.environ.setdefault("GRADIO_SKIP_PYI_GENERATION", "1")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 
 def import_fsspec_without_entry_point_scan():
     import importlib.metadata as importlib_metadata
@@ -28,8 +29,10 @@ import_fsspec_without_entry_point_scan()
 def import_gradio_with_fast_metadata_checks():
     import importlib.metadata as importlib_metadata
     import importlib.util
+    import pkgutil
 
     original_version = importlib_metadata.version
+    original_get_data = pkgutil.get_data
 
     # huggingface_hub checks these package versions at import time for telemetry
     # and optional-feature flags. On this local environment, reading distribution
@@ -74,13 +77,20 @@ def import_gradio_with_fast_metadata_checks():
             raise importlib_metadata.PackageNotFoundError(package_name)
         return "0.0.0"
 
+    def fast_get_data(package, resource):
+        if str(package).startswith("gradio") and resource == "package.json":
+            return b'{"version": "0.0.0"}'
+        return original_get_data(package, resource)
+
     importlib_metadata.version = fast_version
+    pkgutil.get_data = fast_get_data
     try:
         import gradio as imported_gradio
         from gradio import data_classes as imported_data_classes
         from gradio import networking as imported_networking
     finally:
         importlib_metadata.version = original_version
+        pkgutil.get_data = original_get_data
 
     return imported_gradio, imported_data_classes, imported_networking
 
@@ -105,7 +115,11 @@ from mobilesam_coordinate_wrapper import (
     DEFAULT_RAW_MASK_DATA_DIR,
     format_coordinate_progress_html,
 )
-from sam2_coordinate_wrapper import iter_sam2_coordinate_prompt_folder_steps
+from sam2_coordinate_wrapper import (
+    DEFAULT_SOURCE_COORDINATES_DIR,
+    DEFAULT_SOURCE_FRAMES_DIR,
+    iter_sam2_coordinate_prompt_folder_steps,
+)
 
 # Most of our demo code is from [FastSAM Demo](https://huggingface.co/spaces/An-619/FastSAM). Huge thanks for AN-619.
 
@@ -479,10 +493,10 @@ def _run_coordinate_folder_batch_worker(
         previews_zip=None,
     )
     try:
-        frames_dir = resolve_user_folder_path(frame_folder, DEFAULT_RAW_MASK_DATA_DIR / "frames")
+        frames_dir = resolve_user_folder_path(frame_folder, DEFAULT_SOURCE_FRAMES_DIR)
         coordinates_dir = resolve_user_folder_path(
             coordinate_folder,
-            DEFAULT_RAW_MASK_DATA_DIR / "coordinates",
+            DEFAULT_SOURCE_COORDINATES_DIR,
         )
         print(
             "[SAM2 coordinate folders] "
@@ -523,8 +537,10 @@ def _run_coordinate_folder_batch_worker(
                 status = (
                     "Processed with SAM2 "
                     f"{result['processed_frames']} frame(s). "
-                    f"Frames: {result['frames_dir']} | "
-                    f"Prompts: {result['coordinates_dir']} | "
+                    f"Source frames: {result['source_frames_dir']} | "
+                    f"Downloaded frames: {result['frames_dir']} | "
+                    f"Source prompts: {result['source_coordinates_dir']} | "
+                    f"Processed prompts: {result['coordinates_dir']} | "
                     f"Raw masks: {result['masks_dir']} | "
                     f"Preview frames: {result['previews_dir']}"
                 )
@@ -705,11 +721,11 @@ status_text_p = gr.Textbox(
 )
 batch_frame_folder = gr.Textbox(
     label="Frame folder",
-    value=str(DEFAULT_RAW_MASK_DATA_DIR / "frames"),
+    value=str(DEFAULT_SOURCE_FRAMES_DIR),
 )
 batch_coordinate_folder = gr.Textbox(
     label="Coordinate folder",
-    value=str(DEFAULT_RAW_MASK_DATA_DIR / "coordinates"),
+    value=str(DEFAULT_SOURCE_COORDINATES_DIR),
 )
 batch_target_fps = gr.Number(label="target_fps", value=30)
 batch_padding_ratio = gr.Number(label="Negative padding ratio for positive-only JSON", value=0.15)
@@ -720,7 +736,7 @@ batch_progress_html = gr.HTML(
 )
 batch_frames_download = gr.File(label="Download raw-mask-data/frames")
 batch_masks_download = gr.File(label="Download raw-mask-data/mask class-ID PNGs")
-batch_previews_download = gr.File(label="Download raw-mask-data/masked_frame previews")
+batch_previews_download = gr.File(label="Download raw-mask-data/masked_frames previews")
 point_click_payload = gr.Textbox(
     label="Point click payload",
     interactive=False,

@@ -156,7 +156,81 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             self.assertTrue((frames_dir / "frame_000000.png").exists())
             self.assertTrue((coordinates_dir / "frame_000000.json").exists())
             self.assertTrue((output_root / "mask" / "frame_000000.png").exists())
-            self.assertTrue((output_root / "masked_frame" / "frame_000000.jpg").exists())
+            self.assertTrue((output_root / "masked_frames" / "frame_000000.jpg").exists())
+
+    def test_iter_sam2_coordinate_prompt_folder_steps_writes_processed_coordinates(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            frames_dir = tmp_path / "data" / "frames"
+            source_coordinates_dir = tmp_path / "data" / "coordinates"
+            output_root = tmp_path / "raw-mask-data"
+            output_frames_dir = output_root / "frames"
+            processed_coordinates_dir = output_root / "coordinates"
+            frames_dir.mkdir(parents=True)
+            source_coordinates_dir.mkdir(parents=True)
+            output_frames_dir.mkdir(parents=True)
+            processed_coordinates_dir.mkdir(parents=True)
+            stale_frame_path = output_frames_dir / "stale.png"
+            stale_frame_path.write_bytes(b"stale")
+            stale_coordinate_path = processed_coordinates_dir / "stale.json"
+            stale_coordinate_path.write_text("{}", encoding="utf-8")
+
+            Image.fromarray(np.zeros((6, 6, 3), dtype=np.uint8)).save(
+                frames_dir / "frame_000000.png"
+            )
+            (source_coordinates_dir / "frame_000000.json").write_text(
+                json.dumps(
+                        {
+                            "objects": [
+                                {
+                                    "class_id": 1,
+                                    "point_coords": [[1.0, 1.0], [3.0, 3.0], [4.0, 4.0]],
+                                    "point_labels": [1, 1, 0],
+                                }
+                            ]
+                        }
+                ),
+                encoding="utf-8",
+            )
+
+            predictor = FakeSAM2Predictor()
+            updates = list(
+                iter_sam2_coordinate_prompt_folder_steps(
+                    frames_dir=frames_dir,
+                    coordinates_dir=source_coordinates_dir,
+                    output_root=output_root,
+                    predictor=predictor,
+                    target_fps=30,
+                    source_fps=30,
+                )
+            )
+
+            result = updates[-1]["result"]
+            output_frame_path = output_frames_dir / "frame_000000.png"
+            processed_coordinate_path = processed_coordinates_dir / "frame_000000.json"
+            self.assertEqual(result["source_frames_dir"], frames_dir)
+            self.assertEqual(result["frames_dir"], output_frames_dir)
+            self.assertEqual(result["source_coordinates_dir"], source_coordinates_dir)
+            self.assertEqual(result["coordinates_dir"], processed_coordinates_dir)
+            self.assertTrue(output_frame_path.exists())
+            self.assertFalse(stale_frame_path.exists())
+            self.assertTrue(processed_coordinate_path.exists())
+            self.assertFalse(stale_coordinate_path.exists())
+
+            processed_json = json.loads(processed_coordinate_path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                processed_json["source_coordinate_json"],
+                str(source_coordinates_dir / "frame_000000.json"),
+            )
+            self.assertEqual(
+                processed_json["objects"][0]["positive_points"],
+                [[1.0, 1.0], [3.0, 3.0]],
+            )
+            self.assertEqual(
+                processed_json["objects"][0]["point_labels"],
+                [1, 1, 0, 0, 0, 0],
+            )
+            self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0])
 
 
 if __name__ == "__main__":

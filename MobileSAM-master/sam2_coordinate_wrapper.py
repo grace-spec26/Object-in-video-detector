@@ -13,11 +13,14 @@ from mobilesam_coordinate_wrapper import (
     SUPPORTED_FRAME_EXTENSIONS,
     build_augmented_prompt_object,
     format_coordinate_progress_html,
+    prepare_coordinate_prompt_json,
     save_preview,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SOURCE_FRAMES_DIR = PROJECT_ROOT / "data" / "frames"
+DEFAULT_SOURCE_COORDINATES_DIR = PROJECT_ROOT / "data" / "coordinates"
 SAM2_REPO_ROOT = PROJECT_ROOT / "sam2"
 DEFAULT_SAM2_CHECKPOINT = SAM2_REPO_ROOT / "checkpoints" / "sam2.1_hiera_small.pt"
 DEFAULT_SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_s.yaml"
@@ -320,6 +323,47 @@ def _make_zip_archive(source_dir: Path, archive_path: Path) -> Path:
     return Path(created_path)
 
 
+def _same_path(left: Path, right: Path) -> bool:
+    try:
+        return left.resolve() == right.resolve()
+    except FileNotFoundError:
+        return left.absolute() == right.absolute()
+
+
+def _copy_frame_to_output(frame_path: Path, output_frames_dir: Path) -> Path:
+    output_frame_path = output_frames_dir / frame_path.name
+    output_frame_path.parent.mkdir(parents=True, exist_ok=True)
+    if not _same_path(frame_path, output_frame_path):
+        shutil.copy2(frame_path, output_frame_path)
+    return output_frame_path
+
+
+def write_processed_sam2_coordinate_json(
+    source_coordinate_json_path: Path,
+    frame_path: Path,
+    processed_coordinate_json_path: Path,
+    padding_ratio: float = 0.15,
+) -> Path:
+    """Write processed SAM2 prompts: source positives + generated negative corners."""
+    frame = Image.open(frame_path).convert("RGB")
+    image_width, image_height = frame.size
+    prepare_coordinate_prompt_json(
+        coordinate_json_path=source_coordinate_json_path,
+        image_width=image_width,
+        image_height=image_height,
+        output_path=processed_coordinate_json_path,
+        padding_ratio=padding_ratio,
+        visible_only=True,
+    )
+    processed_data = json.loads(processed_coordinate_json_path.read_text(encoding="utf-8"))
+    processed_data["engine"] = "sam2"
+    processed_coordinate_json_path.write_text(
+        json.dumps(processed_data, indent=2),
+        encoding="utf-8",
+    )
+    return processed_coordinate_json_path
+
+
 def run_sam2_for_frame(
     predictor,
     frame_path: Path,
@@ -384,8 +428,10 @@ def iter_sam2_coordinate_prompt_folder_steps(
     frames_dir = Path(frames_dir)
     coordinates_dir = Path(coordinates_dir)
     output_root = Path(output_root)
+    frames_output_dir = output_root / "frames"
     masks_output_dir = output_root / "mask"
-    previews_output_dir = output_root / "masked_frame"
+    previews_output_dir = output_root / "masked_frames"
+    processed_coordinates_dir = output_root / "coordinates"
 
     if not frames_dir.exists():
         raise FileNotFoundError(f"Frames directory not found: {frames_dir}")
@@ -411,6 +457,14 @@ def iter_sam2_coordinate_prompt_folder_steps(
 
     _clear_matching_files(masks_output_dir, ("*.png", "*.jpg", "*.jpeg"))
     _clear_matching_files(previews_output_dir, ("*.png", "*.jpg", "*.jpeg"))
+    if not _same_path(frames_dir, frames_output_dir):
+        _clear_matching_files(frames_output_dir, ("*.jpg", "*.jpeg", "*.png"))
+    else:
+        frames_output_dir.mkdir(parents=True, exist_ok=True)
+    if not _same_path(coordinates_dir, processed_coordinates_dir):
+        _clear_matching_files(processed_coordinates_dir, ("*.json",))
+    else:
+        processed_coordinates_dir.mkdir(parents=True, exist_ok=True)
 
     resolved_device = None
     if predictor is None:
@@ -432,10 +486,17 @@ def iter_sam2_coordinate_prompt_folder_steps(
     }
 
     for frame_index, frame_path in enumerate(selected_frame_paths, start=1):
+        output_frame_path = _copy_frame_to_output(frame_path, frames_output_dir)
+        processed_coordinate_json_path = write_processed_sam2_coordinate_json(
+            source_coordinate_json_path=coordinates_dir / f"{frame_path.stem}.json",
+            frame_path=output_frame_path,
+            processed_coordinate_json_path=processed_coordinates_dir / f"{frame_path.stem}.json",
+            padding_ratio=padding_ratio,
+        )
         run_sam2_for_frame(
             predictor=predictor,
-            frame_path=frame_path,
-            coordinate_json_path=coordinates_dir / f"{frame_path.stem}.json",
+            frame_path=output_frame_path,
+            coordinate_json_path=processed_coordinate_json_path,
             mask_path=masks_output_dir / f"{frame_path.stem}.png",
             preview_path=previews_output_dir / f"{frame_path.stem}.jpg",
             normalized_coordinate_json_path=None,
@@ -450,15 +511,17 @@ def iter_sam2_coordinate_prompt_folder_steps(
             "result": None,
         }
 
-    frames_zip = _make_zip_archive(frames_dir, output_root / "frames.zip")
+    frames_zip = _make_zip_archive(frames_output_dir, output_root / "frames.zip")
     masks_zip = _make_zip_archive(masks_output_dir, output_root / "mask.zip")
-    previews_zip = _make_zip_archive(previews_output_dir, output_root / "masked_frame.zip")
+    previews_zip = _make_zip_archive(previews_output_dir, output_root / "masked_frames.zip")
     result = {
         "engine": "sam2",
         "processed_frames": len(selected_frame_paths),
         "frame_paths": selected_frame_paths,
-        "frames_dir": frames_dir,
-        "coordinates_dir": coordinates_dir,
+        "source_frames_dir": frames_dir,
+        "frames_dir": frames_output_dir,
+        "source_coordinates_dir": coordinates_dir,
+        "coordinates_dir": processed_coordinates_dir,
         "masks_dir": masks_output_dir,
         "previews_dir": previews_output_dir,
         "frames_zip": frames_zip,
@@ -512,8 +575,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Generate SAM2 wound masks from raw frames and coordinate JSON prompts."
     )
-    parser.add_argument("--frames-dir", required=True, type=Path)
-    parser.add_argument("--coordinates-dir", required=True, type=Path)
+    parser.add_argument("--frames-dir", type=Path, default=DEFAULT_SOURCE_FRAMES_DIR)
+    parser.add_argument("--coordinates-dir", type=Path, default=DEFAULT_SOURCE_COORDINATES_DIR)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_RAW_MASK_DATA_DIR)
     parser.add_argument("--target-fps", type=float, default=30.0)
     parser.add_argument("--source-fps", type=float, default=30.0)
@@ -541,6 +604,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     )
     print(f"processed_frames={result['processed_frames']}")
     print(f"frames_dir={result['frames_dir']}")
+    print(f"source_coordinates_dir={result['source_coordinates_dir']}")
     print(f"coordinates_dir={result['coordinates_dir']}")
     print(f"masks_dir={result['masks_dir']}")
     print(f"previews_dir={result['previews_dir']}")
