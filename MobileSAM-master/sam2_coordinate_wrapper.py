@@ -2,6 +2,7 @@ import argparse
 import json
 import shutil
 import sys
+import types
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -34,6 +35,69 @@ def _ensure_sam2_on_path() -> None:
         sys.path.insert(0, repo_path)
 
 
+def import_torch_without_entry_point_scan():
+    import importlib.metadata as importlib_metadata
+
+    original_entry_points = importlib_metadata.entry_points
+    importlib_metadata.entry_points = lambda *args, **kwargs: {}
+    try:
+        import torch
+    finally:
+        importlib_metadata.entry_points = original_entry_points
+    return torch
+
+
+def install_torchvision_transform_stub_for_sam2() -> None:
+    """Avoid broken torchvision NMS registration; SAM2 only needs basic transforms."""
+    torch = import_torch_without_entry_point_scan()
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+    class Resize(nn.Module):
+        def __init__(self, size):
+            super().__init__()
+            if isinstance(size, int):
+                self.size = (int(size), int(size))
+            else:
+                self.size = (int(size[0]), int(size[1]))
+
+        def forward(self, image):
+            return F.interpolate(
+                image.unsqueeze(0),
+                size=self.size,
+                mode="bilinear",
+                align_corners=False,
+            ).squeeze(0)
+
+    class Normalize(nn.Module):
+        def __init__(self, mean, std):
+            super().__init__()
+            self.register_buffer("mean", torch.tensor(mean, dtype=torch.float32).view(-1, 1, 1))
+            self.register_buffer("std", torch.tensor(std, dtype=torch.float32).view(-1, 1, 1))
+
+        def forward(self, image):
+            return (image - self.mean) / self.std
+
+    class ToTensor:
+        def __call__(self, image):
+            array = np.asarray(image)
+            if array.ndim == 2:
+                array = array[:, :, None]
+            if array.dtype != np.float32:
+                array = array.astype(np.float32) / 255.0
+            tensor = torch.from_numpy(array).permute(2, 0, 1).contiguous()
+            return tensor
+
+    torchvision_module = types.ModuleType("torchvision")
+    transforms_module = types.ModuleType("torchvision.transforms")
+    transforms_module.Normalize = Normalize
+    transforms_module.Resize = Resize
+    transforms_module.ToTensor = ToTensor
+    torchvision_module.transforms = transforms_module
+    sys.modules["torchvision"] = torchvision_module
+    sys.modules["torchvision.transforms"] = transforms_module
+
+
 def resolve_sam2_checkpoint(checkpoint: Optional[Path] = None) -> Path:
     resolved = Path(checkpoint) if checkpoint is not None else DEFAULT_SAM2_CHECKPOINT
     if not resolved.exists():
@@ -48,7 +112,7 @@ def resolve_sam2_device(device: Optional[str] = None) -> str:
     if device:
         return str(device)
 
-    import torch
+    torch = import_torch_without_entry_point_scan()
 
     if torch.cuda.is_available():
         return "cuda"
@@ -63,6 +127,7 @@ def load_sam2_predictor(
     device: Optional[str] = None,
 ):
     _ensure_sam2_on_path()
+    install_torchvision_transform_stub_for_sam2()
 
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
