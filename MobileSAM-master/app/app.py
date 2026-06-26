@@ -5,26 +5,107 @@ import threading
 from pathlib import Path
 
 os.environ.setdefault("GRADIO_SKIP_PYI_GENERATION", "1")
+os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
-import gradio as gr
-from gradio import data_classes as gradio_data_classes
-from gradio import networking as gradio_networking
+def import_fsspec_without_entry_point_scan():
+    import importlib.metadata as importlib_metadata
+
+    original_entry_points = importlib_metadata.entry_points
+
+    class EmptyEntryPoints(list):
+        def select(self, *args, **kwargs):
+            return []
+
+    importlib_metadata.entry_points = lambda *args, **kwargs: EmptyEntryPoints()
+    try:
+        import fsspec  # noqa: F401
+    finally:
+        importlib_metadata.entry_points = original_entry_points
+
+
+import_fsspec_without_entry_point_scan()
+
+def import_gradio_with_fast_metadata_checks():
+    import importlib.metadata as importlib_metadata
+    import importlib.util
+
+    original_version = importlib_metadata.version
+
+    # huggingface_hub checks these package versions at import time for telemetry
+    # and optional-feature flags. On this local environment, reading distribution
+    # metadata is very slow, so answer that narrow availability check without
+    # walking every .dist-info/METADATA file. Normal metadata behavior is restored
+    # immediately after Gradio imports.
+    package_modules = {
+        "aiohttp": "aiohttp",
+        "fastai": "fastai",
+        "fastapi": "fastapi",
+        "fastcore": "fastcore",
+        "gradio": "gradio",
+        "graphviz": "graphviz",
+        "hf_transfer": "hf_transfer",
+        "Jinja2": "jinja2",
+        "keras": "keras",
+        "minijinja": "minijinja",
+        "numpy": "numpy",
+        "Pillow": "PIL",
+        "pydantic": "pydantic",
+        "pydot": "pydot",
+        "safetensors": "safetensors",
+        "tensorboardX": "tensorboardX",
+        "tensorflow": "tensorflow",
+        "tensorflow-cpu": "tensorflow",
+        "tensorflow-gpu": "tensorflow",
+        "tf-nightly": "tensorflow",
+        "tf-nightly-cpu": "tensorflow",
+        "tf-nightly-gpu": "tensorflow",
+        "intel-tensorflow": "tensorflow",
+        "intel-tensorflow-avx512": "tensorflow",
+        "tensorflow-rocm": "tensorflow",
+        "tensorflow-macos": "tensorflow",
+        "torch": "torch",
+    }
+
+    def fast_version(package_name):
+        module_name = package_modules.get(package_name)
+        if module_name is None:
+            return original_version(package_name)
+        if importlib.util.find_spec(module_name) is None:
+            raise importlib_metadata.PackageNotFoundError(package_name)
+        return "0.0.0"
+
+    importlib_metadata.version = fast_version
+    try:
+        import gradio as imported_gradio
+        from gradio import data_classes as imported_data_classes
+        from gradio import networking as imported_networking
+    finally:
+        importlib_metadata.version = original_version
+
+    return imported_gradio, imported_data_classes, imported_networking
+
+
+gr, gradio_data_classes, gradio_networking = import_gradio_with_fast_metadata_checks()
 import numpy as np
-import torch
 
 MOBILE_SAM_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = MOBILE_SAM_ROOT.parent
+RUNTIME_CACHE_DIR = Path(os.environ.get("COTRACKER_MSAM_CACHE_DIR", PROJECT_ROOT / ".runtime_cache"))
+MPL_CACHE_DIR = RUNTIME_CACHE_DIR / "matplotlib"
+XDG_CACHE_DIR = RUNTIME_CACHE_DIR / "xdg"
+MPL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+XDG_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+os.environ.setdefault("MPLCONFIGDIR", str(MPL_CACHE_DIR))
+os.environ.setdefault("XDG_CACHE_HOME", str(XDG_CACHE_DIR))
 if str(MOBILE_SAM_ROOT) not in sys.path:
     sys.path.insert(0, str(MOBILE_SAM_ROOT))
 
-from mobile_sam import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
 from PIL import Image, ImageDraw
 from mobilesam_coordinate_wrapper import (
     DEFAULT_RAW_MASK_DATA_DIR,
     format_coordinate_progress_html,
-    iter_coordinate_prompt_folder_steps,
 )
-from utils.tools_gradio import fast_process
+from sam2_coordinate_wrapper import iter_sam2_coordinate_prompt_folder_steps
 
 # Most of our demo code is from [FastSAM Demo](https://huggingface.co/spaces/An-619/FastSAM). Huge thanks for AN-619.
 
@@ -45,18 +126,39 @@ def patch_gradio_predict_body():
 patch_gradio_predict_body()
 gradio_networking.url_ok = lambda _: True
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+mobile_sam_runtime_lock = threading.Lock()
+mobile_sam_runtime = {
+    "torch": None,
+    "device": None,
+    "mask_generator": None,
+    "predictor": None,
+}
 
-# Load the pre-trained model
-sam_checkpoint = str(MOBILE_SAM_ROOT / "weights" / "mobile_sam.pt")
-model_type = "vit_t"
 
-mobile_sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
-mobile_sam = mobile_sam.to(device=device)
-mobile_sam.eval()
+def get_mobile_sam_runtime():
+    with mobile_sam_runtime_lock:
+        if mobile_sam_runtime["predictor"] is not None:
+            return mobile_sam_runtime
 
-mask_generator = SamAutomaticMaskGenerator(mobile_sam)
-predictor = SamPredictor(mobile_sam)
+        import torch
+        from mobile_sam import SamAutomaticMaskGenerator, SamPredictor, sam_model_registry
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        sam_checkpoint = str(MOBILE_SAM_ROOT / "weights" / "mobile_sam.pt")
+        model_type = "vit_t"
+        mobile_sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
+        mobile_sam = mobile_sam.to(device=device)
+        mobile_sam.eval()
+
+        mobile_sam_runtime.update(
+            {
+                "torch": torch,
+                "device": device,
+                "mask_generator": SamAutomaticMaskGenerator(mobile_sam),
+                "predictor": SamPredictor(mobile_sam),
+            }
+        )
+        return mobile_sam_runtime
 
 # Description
 title = "<center><strong><font size='8'>Faster Segment Anything(MobileSAM)<font></strong></center>"
@@ -97,7 +199,12 @@ h1 { text-align: center }
 """
 
 
-@torch.no_grad()
+def render_annotations_with_fast_process(**kwargs):
+    from utils.tools_gradio import fast_process
+
+    return fast_process(**kwargs)
+
+
 def segment_everything(
     image,
     input_size=1024,
@@ -106,30 +213,34 @@ def segment_everything(
     use_retina=True,
     mask_random_color=True,
 ):
-    global mask_generator
+    runtime = get_mobile_sam_runtime()
+    torch = runtime["torch"]
+    device = runtime["device"]
+    mask_generator = runtime["mask_generator"]
 
-    input_size = int(input_size)
-    w, h = image.size
-    scale = input_size / max(w, h)
-    new_w = int(w * scale)
-    new_h = int(h * scale)
-    image = image.resize((new_w, new_h))
+    with torch.no_grad():
+        input_size = int(input_size)
+        w, h = image.size
+        scale = input_size / max(w, h)
+        new_w = int(w * scale)
+        new_h = int(h * scale)
+        image = image.resize((new_w, new_h))
 
-    nd_image = np.array(image)
-    annotations = mask_generator.generate(nd_image)
+        nd_image = np.array(image)
+        annotations = mask_generator.generate(nd_image)
 
-    fig = fast_process(
-        annotations=annotations,
-        image=image,
-        device=device,
-        scale=(1024 // input_size),
-        better_quality=better_quality,
-        mask_random_color=mask_random_color,
-        bbox=None,
-        use_retina=use_retina,
-        withContours=withContours,
-    )
-    return fig
+        fig = render_annotations_with_fast_process(
+            annotations=annotations,
+            image=image,
+            device=device,
+            scale=(1024 // input_size),
+            better_quality=better_quality,
+            mask_random_color=mask_random_color,
+            bbox=None,
+            use_retina=use_retina,
+            withContours=withContours,
+        )
+        return fig
 
 
 def segment_with_points(
@@ -155,29 +266,35 @@ def segment_with_points(
         print("No points added")
         return image, image, "no points added"
 
+    runtime = get_mobile_sam_runtime()
+    torch = runtime["torch"]
+    device = runtime["device"]
+    predictor = runtime["predictor"]
+
     print(point_coords, point_coords is not None)
     print(point_labels, point_labels is not None)
 
-    nd_image = np.array(image)
-    predictor.set_image(nd_image)
-    masks, scores, logits = predictor.predict(
-        point_coords=point_coords,
-        point_labels=point_labels,
-        multimask_output=len(point_coords) == 1,
-    )
-    annotations = np.array([masks[np.argmax(scores)]])
+    with torch.no_grad():
+        nd_image = np.array(image)
+        predictor.set_image(nd_image)
+        masks, scores, logits = predictor.predict(
+            point_coords=point_coords,
+            point_labels=point_labels,
+            multimask_output=len(point_coords) == 1,
+        )
+        annotations = np.array([masks[np.argmax(scores)]])
 
-    fig = fast_process(
-        annotations=annotations,
-        image=image,
-        device=device,
-        scale=1,
-        better_quality=better_quality,
-        mask_random_color=mask_random_color,
-        bbox=None,
-        use_retina=use_retina,
-        withContours=withContours,
-    )
+        fig = render_annotations_with_fast_process(
+            annotations=annotations,
+            image=image,
+            device=device,
+            scale=1,
+            better_quality=better_quality,
+            mask_random_color=mask_random_color,
+            bbox=None,
+            use_retina=use_retina,
+            withContours=withContours,
+        )
 
     global_points = []
     global_point_label = []
@@ -303,6 +420,17 @@ def resolve_folder_path(folder_value, default_path):
     return candidates[0]
 
 
+def resolve_user_folder_path(folder_value, default_path):
+    raw_value = str(folder_value or "").strip()
+    if not raw_value:
+        return Path(default_path)
+
+    path = Path(raw_value).expanduser()
+    if path.is_absolute():
+        return path
+    return PROJECT_ROOT / path
+
+
 coordinate_batch_state_lock = threading.Lock()
 coordinate_batch_state = {
     "running": False,
@@ -310,6 +438,7 @@ coordinate_batch_state = {
     "progress_html": format_coordinate_progress_html(0, 1, "Ready"),
     "frames_zip": None,
     "masks_zip": None,
+    "previews_zip": None,
 }
 
 
@@ -326,6 +455,7 @@ def get_coordinate_batch_outputs():
         state.get("progress_html") or format_coordinate_progress_html(0, 1, "Ready"),
         state.get("frames_zip"),
         state.get("masks_zip"),
+        state.get("previews_zip"),
     )
 
 
@@ -335,26 +465,27 @@ def _run_coordinate_folder_batch_worker(
     target_fps,
     padding_ratio,
 ):
-    print("[MobileSAM coordinate folders] request received", flush=True)
+    print("[SAM2 coordinate folders] request received", flush=True)
     set_coordinate_batch_state(
         running=True,
-        status="Initializing MobileSAM coordinate folder run",
+        status="Initializing SAM2 coordinate folder run",
         progress_html=format_coordinate_progress_html(
             0,
             1,
-            "Initializing MobileSAM coordinate folder run",
+            "Initializing SAM2 coordinate folder run",
         ),
         frames_zip=None,
         masks_zip=None,
+        previews_zip=None,
     )
     try:
-        frames_dir = resolve_folder_path(frame_folder, PROJECT_ROOT / "data" / "frames")
-        coordinates_dir = resolve_folder_path(
+        frames_dir = resolve_user_folder_path(frame_folder, DEFAULT_RAW_MASK_DATA_DIR / "frames")
+        coordinates_dir = resolve_user_folder_path(
             coordinate_folder,
-            PROJECT_ROOT / "data" / "coordinates",
+            DEFAULT_RAW_MASK_DATA_DIR / "coordinates",
         )
         print(
-            "[MobileSAM coordinate folders] "
+            "[SAM2 coordinate folders] "
             f"frames_dir={frames_dir} coordinates_dir={coordinates_dir} "
             f"target_fps={target_fps} padding_ratio={padding_ratio}",
             flush=True,
@@ -364,13 +495,13 @@ def _run_coordinate_folder_batch_worker(
             progress_html=format_coordinate_progress_html(0, 1, "Scanning input folders"),
             frames_zip=None,
             masks_zip=None,
+            previews_zip=None,
         )
         final_result = None
-        for update in iter_coordinate_prompt_folder_steps(
+        for update in iter_sam2_coordinate_prompt_folder_steps(
             frames_dir=frames_dir,
             coordinates_dir=coordinates_dir,
             output_root=DEFAULT_RAW_MASK_DATA_DIR,
-            predictor=predictor,
             target_fps=float(target_fps),
             source_fps=30.0,
             padding_ratio=float(padding_ratio),
@@ -382,7 +513,7 @@ def _run_coordinate_folder_batch_worker(
                 message=update["message"],
             )
             print(
-                "[MobileSAM coordinate folders] "
+                "[SAM2 coordinate folders] "
                 f"{update['stage']} {update['completed']}/{update['total']}: "
                 f"{update['message']}",
                 flush=True,
@@ -390,11 +521,12 @@ def _run_coordinate_folder_batch_worker(
             if result:
                 final_result = result
                 status = (
-                    "Processed "
+                    "Processed with SAM2 "
                     f"{result['processed_frames']} frame(s). "
                     f"Frames: {result['frames_dir']} | "
-                    f"Augmented prompts: {result['coordinates_dir']} | "
-                    f"Masked pictures: {result['masks_dir']}"
+                    f"Prompts: {result['coordinates_dir']} | "
+                    f"Raw masks: {result['masks_dir']} | "
+                    f"Preview frames: {result['previews_dir']}"
                 )
                 set_coordinate_batch_state(
                     running=False,
@@ -402,6 +534,7 @@ def _run_coordinate_folder_batch_worker(
                     progress_html=progress_html,
                     frames_zip=str(result["frames_zip"]),
                     masks_zip=str(result["masks_zip"]),
+                    previews_zip=str(result["previews_zip"]),
                 )
             else:
                 set_coordinate_batch_state(
@@ -409,18 +542,20 @@ def _run_coordinate_folder_batch_worker(
                     progress_html=progress_html,
                     frames_zip=None,
                     masks_zip=None,
+                    previews_zip=None,
                 )
 
         if final_result is None:
-            raise RuntimeError("MobileSAM did not produce an output result.")
+            raise RuntimeError("SAM2 did not produce an output result.")
     except Exception as exc:
-        print(f"[MobileSAM coordinate folders] failed: {exc}", flush=True)
+        print(f"[SAM2 coordinate folders] failed: {exc}", flush=True)
         set_coordinate_batch_state(
             running=False,
-            status=f"MobileSAM batch failed: {exc}",
+            status=f"SAM2 batch failed: {exc}",
             progress_html=format_coordinate_progress_html(0, 1, "Failed"),
             frames_zip=None,
             masks_zip=None,
+            previews_zip=None,
         )
 
 
@@ -433,21 +568,23 @@ def start_coordinate_folder_batch(
     with coordinate_batch_state_lock:
         if coordinate_batch_state.get("running"):
             return (
-                "A MobileSAM coordinate folder run is already active.",
+                "A SAM2 coordinate folder run is already active.",
                 coordinate_batch_state["progress_html"],
                 coordinate_batch_state.get("frames_zip"),
                 coordinate_batch_state.get("masks_zip"),
+                coordinate_batch_state.get("previews_zip"),
             )
         coordinate_batch_state.update(
             running=True,
-            status="Starting MobileSAM coordinate folder worker",
+            status="Starting SAM2 coordinate folder worker",
             progress_html=format_coordinate_progress_html(
                 0,
                 1,
-                "Starting MobileSAM coordinate folder worker",
+                "Starting SAM2 coordinate folder worker",
             ),
             frames_zip=None,
             masks_zip=None,
+            previews_zip=None,
         )
 
     worker = threading.Thread(
@@ -568,21 +705,22 @@ status_text_p = gr.Textbox(
 )
 batch_frame_folder = gr.Textbox(
     label="Frame folder",
-    value=str(PROJECT_ROOT / "data" / "frames"),
+    value=str(DEFAULT_RAW_MASK_DATA_DIR / "frames"),
 )
 batch_coordinate_folder = gr.Textbox(
     label="Coordinate folder",
-    value=str(PROJECT_ROOT / "data" / "coordinates"),
+    value=str(DEFAULT_RAW_MASK_DATA_DIR / "coordinates"),
 )
-batch_target_fps = gr.Number(label="target_fps", value=5)
-batch_padding_ratio = gr.Number(label="Negative padding ratio", value=0.15)
+batch_target_fps = gr.Number(label="target_fps", value=30)
+batch_padding_ratio = gr.Number(label="Negative padding ratio for positive-only JSON", value=0.15)
 batch_status = gr.Textbox(label="Status", interactive=False)
 batch_progress_html = gr.HTML(
     value=format_coordinate_progress_html(0, 1, "Ready"),
     label="Progress",
 )
 batch_frames_download = gr.File(label="Download raw-mask-data/frames")
-batch_masks_download = gr.File(label="Download raw-mask-data/mask")
+batch_masks_download = gr.File(label="Download raw-mask-data/mask class-ID PNGs")
+batch_previews_download = gr.File(label="Download raw-mask-data/masked_frame previews")
 point_click_payload = gr.Textbox(
     label="Point click payload",
     interactive=False,
@@ -714,7 +852,7 @@ with gr.Blocks(
                 batch_target_fps.render()
                 batch_padding_ratio.render()
                 batch_process_btn = gr.Button(
-                    "Run MobileSAM from coordinate folders",
+                    "Run SAM2 from coordinate folders",
                     variant="primary",
                 )
 
@@ -724,6 +862,7 @@ with gr.Blocks(
         with gr.Row():
             batch_frames_download.render()
             batch_masks_download.render()
+            batch_previews_download.render()
 
     upload_img_p.upload(
         reset_points_on_upload,
@@ -774,6 +913,7 @@ with gr.Blocks(
             batch_progress_html,
             batch_frames_download,
             batch_masks_download,
+            batch_previews_download,
         ],
         queue=False,
         show_progress="hidden",
@@ -785,6 +925,7 @@ with gr.Blocks(
             batch_progress_html,
             batch_frames_download,
             batch_masks_download,
+            batch_previews_download,
         ],
         queue=False,
         show_progress="hidden",

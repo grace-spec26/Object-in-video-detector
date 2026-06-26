@@ -43,3 +43,6 @@ dataset/
 datasets/
 runs/
 raw-mask-data/
+.runtime_cache/
+sam2/
+video-frame-extractor-master/

@@ -22,24 +22,44 @@ from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
-from export_helpers import (
-    DEFAULT_COORDINATES_DIR,
-    DEFAULT_FRAMES_DIR,
-    store_coordinate_arrays,
-    store_original_frames,
-)
-from tracking_helpers import (
-    DEFAULT_TRACKING_RESOLUTION,
-    TRACKING_FRAME_STRIDE,
-    TRACKING_RESOLUTION_OPTIONS,
-    expand_sampled_time_axis,
-    get_cached_cotracker_model,
-    get_online_chunk_start_indices,
-    map_frame_index_to_sampled,
-    resolve_torch_device,
-    resize_video_for_tracking,
-    subsample_video_tensor,
-)
+try:
+    from .export_helpers import (
+        DEFAULT_COORDINATES_DIR,
+        DEFAULT_FRAMES_DIR,
+        store_coordinate_arrays,
+        store_original_frames,
+    )
+    from .tracking_helpers import (
+        DEFAULT_TRACKING_RESOLUTION,
+        TRACKING_FRAME_STRIDE,
+        TRACKING_RESOLUTION_OPTIONS,
+        expand_sampled_time_axis,
+        get_cached_cotracker_model,
+        get_online_chunk_start_indices,
+        map_frame_index_to_sampled,
+        resolve_torch_device,
+        resize_video_for_tracking,
+        subsample_video_tensor,
+    )
+except ImportError:
+    from export_helpers import (
+        DEFAULT_COORDINATES_DIR,
+        DEFAULT_FRAMES_DIR,
+        store_coordinate_arrays,
+        store_original_frames,
+    )
+    from tracking_helpers import (
+        DEFAULT_TRACKING_RESOLUTION,
+        TRACKING_FRAME_STRIDE,
+        TRACKING_RESOLUTION_OPTIONS,
+        expand_sampled_time_axis,
+        get_cached_cotracker_model,
+        get_online_chunk_start_indices,
+        map_frame_index_to_sampled,
+        resolve_torch_device,
+        resize_video_for_tracking,
+        subsample_video_tensor,
+    )
 
 
 def patch_gradio_predict_body():

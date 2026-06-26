@@ -1,0 +1,553 @@
+import argparse
+import json
+import shutil
+import sys
+from pathlib import Path
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+
+import numpy as np
+from PIL import Image
+
+from mobilesam_coordinate_wrapper import (
+    DEFAULT_RAW_MASK_DATA_DIR,
+    SUPPORTED_FRAME_EXTENSIONS,
+    build_augmented_prompt_object,
+    format_coordinate_progress_html,
+    save_preview,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+SAM2_REPO_ROOT = PROJECT_ROOT / "sam2"
+DEFAULT_SAM2_CHECKPOINT = SAM2_REPO_ROOT / "checkpoints" / "sam2.1_hiera_small.pt"
+DEFAULT_SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_s.yaml"
+
+
+def _ensure_sam2_on_path() -> None:
+    if not SAM2_REPO_ROOT.exists():
+        raise FileNotFoundError(f"SAM2 repo not found: {SAM2_REPO_ROOT}")
+    repo_path = str(SAM2_REPO_ROOT)
+    if repo_path not in sys.path:
+        sys.path.insert(0, repo_path)
+
+
+def resolve_sam2_checkpoint(checkpoint: Optional[Path] = None) -> Path:
+    resolved = Path(checkpoint) if checkpoint is not None else DEFAULT_SAM2_CHECKPOINT
+    if not resolved.exists():
+        raise FileNotFoundError(
+            f"SAM2 checkpoint not found: {resolved}. "
+            "Download sam2.1_hiera_small.pt into sam2/checkpoints/."
+        )
+    return resolved
+
+
+def resolve_sam2_device(device: Optional[str] = None) -> str:
+    if device:
+        return str(device)
+
+    import torch
+
+    if torch.cuda.is_available():
+        return "cuda"
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+def load_sam2_predictor(
+    checkpoint: Optional[Path] = None,
+    config: str = DEFAULT_SAM2_CONFIG,
+    device: Optional[str] = None,
+):
+    _ensure_sam2_on_path()
+
+    from sam2.build_sam import build_sam2
+    from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+    resolved_device = resolve_sam2_device(device)
+    model = build_sam2(
+        config,
+        ckpt_path=str(resolve_sam2_checkpoint(checkpoint)),
+        device=resolved_device,
+        apply_postprocessing=False,
+    )
+    return SAM2ImagePredictor(model), resolved_device
+
+
+def _json_ready_points(points: np.ndarray) -> List[List[float]]:
+    return [[float(x), float(y)] for x, y in np.asarray(points, dtype=np.float32).tolist()]
+
+
+def _as_point_array(points: Any, source: Path) -> np.ndarray:
+    coords = np.asarray(points, dtype=np.float32)
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        raise ValueError(f"Expected [x, y] point coordinates in {source}")
+    if len(coords) == 0:
+        raise ValueError(f"No point coordinates found in {source}")
+    return coords
+
+
+def _clamp_points(points: np.ndarray, image_width: int, image_height: int) -> np.ndarray:
+    clamped = np.asarray(points, dtype=np.float32).copy()
+    clamped[:, 0] = np.clip(clamped[:, 0], 0, image_width - 1)
+    clamped[:, 1] = np.clip(clamped[:, 1], 0, image_height - 1)
+    return clamped
+
+
+def _points_records_to_prompt(records: Sequence[Dict[str, Any]], source: Path) -> Tuple[np.ndarray, np.ndarray]:
+    coords = []
+    labels = []
+    for point in records:
+        if "x" not in point or "y" not in point:
+            raise ValueError(f"Point record missing x/y in {source}")
+        if not bool(point.get("visible", True)):
+            continue
+        coords.append([float(point["x"]), float(point["y"])])
+        if "label" in point:
+            labels.append(int(point["label"]))
+        else:
+            labels.append(0 if str(point.get("type", "")).lower() == "negative" else 1)
+    if not coords:
+        raise ValueError(f"No visible point records found in {source}")
+    return np.asarray(coords, dtype=np.float32), np.asarray(labels, dtype=np.int32)
+
+
+def _prompt_from_positive_only(
+    positive_points: Any,
+    image_width: int,
+    image_height: int,
+    padding_ratio: float,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
+    augmented = build_augmented_prompt_object(
+        positive_points=positive_points,
+        image_width=image_width,
+        image_height=image_height,
+        padding_ratio=padding_ratio,
+        class_id=1,
+    )
+    coords = np.asarray(augmented["point_coords"], dtype=np.float32)
+    labels = np.asarray(augmented["point_labels"], dtype=np.int32)
+    return coords, labels, augmented
+
+
+def _object_to_prompt(
+    obj: Dict[str, Any],
+    source: Path,
+    image_width: int,
+    image_height: int,
+    padding_ratio: float,
+) -> Tuple[np.ndarray, np.ndarray, int, Dict[str, Any]]:
+    class_id = int(obj.get("class_id", 1))
+
+    if "point_coords" in obj and "point_labels" in obj:
+        coords = _clamp_points(_as_point_array(obj["point_coords"], source), image_width, image_height)
+        labels = np.asarray(obj["point_labels"], dtype=np.int32)
+        if labels.ndim != 1 or len(labels) != len(coords):
+            raise ValueError(f"point_labels length does not match point_coords in {source}")
+        prompt_json = {
+            "class_id": class_id,
+            "positive_points": _json_ready_points(coords[labels == 1]),
+            "negative_points": _json_ready_points(coords[labels == 0]),
+            "point_coords": _json_ready_points(coords),
+            "point_labels": [int(label) for label in labels.tolist()],
+        }
+        return coords, labels, class_id, prompt_json
+
+    if "positive_points" in obj or "negative_points" in obj:
+        positives = np.asarray(obj.get("positive_points", []), dtype=np.float32).reshape(-1, 2)
+        negatives = np.asarray(obj.get("negative_points", []), dtype=np.float32).reshape(-1, 2)
+        if len(negatives) == 0:
+            coords, labels, prompt_json = _prompt_from_positive_only(
+                positives,
+                image_width=image_width,
+                image_height=image_height,
+                padding_ratio=padding_ratio,
+            )
+            prompt_json["class_id"] = class_id
+            return coords, labels, class_id, prompt_json
+
+        coords = _clamp_points(np.concatenate([positives, negatives], axis=0), image_width, image_height)
+        labels = np.asarray([1] * len(positives) + [0] * len(negatives), dtype=np.int32)
+        prompt_json = {
+            "class_id": class_id,
+            "positive_points": _json_ready_points(coords[labels == 1]),
+            "negative_points": _json_ready_points(coords[labels == 0]),
+            "point_coords": _json_ready_points(coords),
+            "point_labels": [int(label) for label in labels.tolist()],
+        }
+        return coords, labels, class_id, prompt_json
+
+    if obj.get("points"):
+        coords, labels = _points_records_to_prompt(obj["points"], source)
+        coords = _clamp_points(coords, image_width, image_height)
+        prompt_json = {
+            "class_id": class_id,
+            "positive_points": _json_ready_points(coords[labels == 1]),
+            "negative_points": _json_ready_points(coords[labels == 0]),
+            "point_coords": _json_ready_points(coords),
+            "point_labels": [int(label) for label in labels.tolist()],
+        }
+        return coords, labels, class_id, prompt_json
+
+    raise ValueError(f"Unsupported coordinate object format in {source}")
+
+
+def load_sam2_prompt_objects(
+    coordinate_json_path: Path,
+    image_width: int,
+    image_height: int,
+    padding_ratio: float = 0.15,
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray, int]], Dict[str, Any]]:
+    if not coordinate_json_path.exists():
+        raise FileNotFoundError(f"Coordinate JSON not found: {coordinate_json_path}")
+
+    data = json.loads(coordinate_json_path.read_text(encoding="utf-8"))
+    prompt_objects: List[Tuple[np.ndarray, np.ndarray, int]] = []
+    prompt_json_objects = []
+
+    if isinstance(data, list):
+        coords, labels, prompt_json = _prompt_from_positive_only(
+            data,
+            image_width=image_width,
+            image_height=image_height,
+            padding_ratio=padding_ratio,
+        )
+        prompt_objects.append((coords, labels, 1))
+        prompt_json_objects.append(prompt_json)
+    elif isinstance(data, dict) and data.get("objects"):
+        for obj in data["objects"]:
+            coords, labels, class_id, prompt_json = _object_to_prompt(
+                obj,
+                source=coordinate_json_path,
+                image_width=image_width,
+                image_height=image_height,
+                padding_ratio=padding_ratio,
+            )
+            prompt_objects.append((coords, labels, class_id))
+            prompt_json_objects.append(prompt_json)
+    elif isinstance(data, dict):
+        if "point_coords" in data and "point_labels" in data:
+            obj = {
+                "class_id": int(data.get("class_id", 1)),
+                "point_coords": data["point_coords"],
+                "point_labels": data["point_labels"],
+            }
+            coords, labels, class_id, prompt_json = _object_to_prompt(
+                obj,
+                source=coordinate_json_path,
+                image_width=image_width,
+                image_height=image_height,
+                padding_ratio=padding_ratio,
+            )
+            prompt_objects.append((coords, labels, class_id))
+            prompt_json_objects.append(prompt_json)
+        elif data.get("points") and isinstance(data["points"][0], dict):
+            obj = {"class_id": int(data.get("class_id", 1)), "points": data["points"]}
+            coords, labels, class_id, prompt_json = _object_to_prompt(
+                obj,
+                source=coordinate_json_path,
+                image_width=image_width,
+                image_height=image_height,
+                padding_ratio=padding_ratio,
+            )
+            prompt_objects.append((coords, labels, class_id))
+            prompt_json_objects.append(prompt_json)
+        else:
+            for key in ("positive_points", "coordinates", "points"):
+                if key in data:
+                    coords, labels, prompt_json = _prompt_from_positive_only(
+                        data[key],
+                        image_width=image_width,
+                        image_height=image_height,
+                        padding_ratio=padding_ratio,
+                    )
+                    prompt_objects.append((coords, labels, int(data.get("class_id", 1))))
+                    prompt_json_objects.append(prompt_json)
+                    break
+    else:
+        raise ValueError(f"Unsupported coordinate JSON format in {coordinate_json_path}")
+
+    if not prompt_objects:
+        raise ValueError(f"No SAM2 prompt objects found in {coordinate_json_path}")
+
+    prompt_json = {
+        "source_coordinate_json": str(coordinate_json_path),
+        "image_size": {"width": int(image_width), "height": int(image_height)},
+        "padding_ratio": float(padding_ratio),
+        "engine": "sam2",
+        "objects": prompt_json_objects,
+    }
+    return prompt_objects, prompt_json
+
+
+def list_frame_paths(frames_dir: Path) -> List[Path]:
+    return sorted(
+        path for path in Path(frames_dir).iterdir() if path.suffix.lower() in SUPPORTED_FRAME_EXTENSIONS
+    )
+
+
+def select_frames_for_target_fps(
+    frame_paths: Sequence[Path],
+    target_fps: float,
+    source_fps: float = 30.0,
+) -> List[Path]:
+    if target_fps <= 0:
+        raise ValueError("target_fps must be greater than 0.")
+    if source_fps <= 0:
+        raise ValueError("source_fps must be greater than 0.")
+    stride = max(1, int(round(float(source_fps) / float(target_fps))))
+    return list(sorted(frame_paths)[::stride])
+
+
+def _clear_matching_files(output_dir: Path, patterns: Sequence[str]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    for pattern in patterns:
+        for path in output_dir.glob(pattern):
+            if path.is_file():
+                path.unlink()
+
+
+def _make_zip_archive(source_dir: Path, archive_path: Path) -> Path:
+    if archive_path.exists():
+        archive_path.unlink()
+    archive_base = archive_path.with_suffix("")
+    created_path = shutil.make_archive(
+        str(archive_base),
+        "zip",
+        root_dir=source_dir.parent,
+        base_dir=source_dir.name,
+    )
+    return Path(created_path)
+
+
+def run_sam2_for_frame(
+    predictor,
+    frame_path: Path,
+    coordinate_json_path: Path,
+    mask_path: Path,
+    preview_path: Optional[Path] = None,
+    normalized_coordinate_json_path: Optional[Path] = None,
+    padding_ratio: float = 0.15,
+    score_threshold: float = 0.0,
+) -> None:
+    if not frame_path.exists():
+        raise FileNotFoundError(f"Frame not found: {frame_path}")
+
+    frame_rgb = np.asarray(Image.open(frame_path).convert("RGB"))
+    image_height, image_width = frame_rgb.shape[:2]
+    prompt_objects, prompt_json = load_sam2_prompt_objects(
+        coordinate_json_path,
+        image_width=image_width,
+        image_height=image_height,
+        padding_ratio=padding_ratio,
+    )
+
+    output_mask = np.zeros((image_height, image_width), dtype=np.uint8)
+    predictor.set_image(frame_rgb)
+    for point_coords, point_labels, class_id in prompt_objects:
+        masks, scores, _ = predictor.predict(
+            point_coords=point_coords.astype(np.float32),
+            point_labels=point_labels.astype(np.int32),
+            multimask_output=True,
+            normalize_coords=True,
+        )
+        best_index = int(np.argmax(scores))
+        best_mask = masks[best_index].astype(bool)
+        best_score = float(scores[best_index])
+        if best_score < score_threshold:
+            output_mask[best_mask] = 255
+        else:
+            output_mask[best_mask] = 1 if class_id == 1 else int(class_id)
+
+    mask_path.parent.mkdir(parents=True, exist_ok=True)
+    Image.fromarray(output_mask, mode="L").save(mask_path)
+    if preview_path is not None:
+        save_preview(frame_rgb, output_mask, preview_path)
+    if normalized_coordinate_json_path is not None:
+        normalized_coordinate_json_path.parent.mkdir(parents=True, exist_ok=True)
+        normalized_coordinate_json_path.write_text(json.dumps(prompt_json, indent=2), encoding="utf-8")
+
+
+def iter_sam2_coordinate_prompt_folder_steps(
+    frames_dir: Path,
+    coordinates_dir: Path,
+    output_root: Path = DEFAULT_RAW_MASK_DATA_DIR,
+    predictor=None,
+    checkpoint: Optional[Path] = None,
+    config: str = DEFAULT_SAM2_CONFIG,
+    device: Optional[str] = None,
+    target_fps: float = 30.0,
+    source_fps: float = 30.0,
+    padding_ratio: float = 0.15,
+    score_threshold: float = 0.0,
+) -> Iterable[Dict[str, Any]]:
+    frames_dir = Path(frames_dir)
+    coordinates_dir = Path(coordinates_dir)
+    output_root = Path(output_root)
+    masks_output_dir = output_root / "mask"
+    previews_output_dir = output_root / "masked_frame"
+
+    if not frames_dir.exists():
+        raise FileNotFoundError(f"Frames directory not found: {frames_dir}")
+    if not coordinates_dir.exists():
+        raise FileNotFoundError(f"Coordinates directory not found: {coordinates_dir}")
+
+    frame_paths = list_frame_paths(frames_dir)
+    if not frame_paths:
+        raise RuntimeError(f"No frames found in: {frames_dir}")
+
+    selected_frame_paths = select_frames_for_target_fps(
+        frame_paths,
+        target_fps=float(target_fps),
+        source_fps=float(source_fps),
+    )
+    missing_json = [
+        coordinates_dir / f"{frame_path.stem}.json"
+        for frame_path in selected_frame_paths
+        if not (coordinates_dir / f"{frame_path.stem}.json").exists()
+    ]
+    if missing_json:
+        raise FileNotFoundError(f"Missing coordinate JSON for frame: {missing_json[0]}")
+
+    _clear_matching_files(masks_output_dir, ("*.png", "*.jpg", "*.jpeg"))
+    _clear_matching_files(previews_output_dir, ("*.png", "*.jpg", "*.jpeg"))
+
+    resolved_device = None
+    if predictor is None:
+        predictor, resolved_device = load_sam2_predictor(
+            checkpoint=checkpoint,
+            config=config,
+            device=device,
+        )
+    else:
+        resolved_device = device or "provided predictor"
+
+    total = len(selected_frame_paths)
+    yield {
+        "stage": "starting",
+        "completed": 0,
+        "total": total,
+        "message": f"Starting SAM2 on {resolved_device} for {total} frame(s)",
+        "result": None,
+    }
+
+    for frame_index, frame_path in enumerate(selected_frame_paths, start=1):
+        run_sam2_for_frame(
+            predictor=predictor,
+            frame_path=frame_path,
+            coordinate_json_path=coordinates_dir / f"{frame_path.stem}.json",
+            mask_path=masks_output_dir / f"{frame_path.stem}.png",
+            preview_path=previews_output_dir / f"{frame_path.stem}.jpg",
+            normalized_coordinate_json_path=None,
+            padding_ratio=padding_ratio,
+            score_threshold=score_threshold,
+        )
+        yield {
+            "stage": "processing",
+            "completed": frame_index,
+            "total": total,
+            "message": f"Processed {frame_path.name}",
+            "result": None,
+        }
+
+    frames_zip = _make_zip_archive(frames_dir, output_root / "frames.zip")
+    masks_zip = _make_zip_archive(masks_output_dir, output_root / "mask.zip")
+    previews_zip = _make_zip_archive(previews_output_dir, output_root / "masked_frame.zip")
+    result = {
+        "engine": "sam2",
+        "processed_frames": len(selected_frame_paths),
+        "frame_paths": selected_frame_paths,
+        "frames_dir": frames_dir,
+        "coordinates_dir": coordinates_dir,
+        "masks_dir": masks_output_dir,
+        "previews_dir": previews_output_dir,
+        "frames_zip": frames_zip,
+        "masks_zip": masks_zip,
+        "previews_zip": previews_zip,
+    }
+    yield {
+        "stage": "done",
+        "completed": total,
+        "total": total,
+        "message": f"Completed {total} SAM2 frame(s)",
+        "result": result,
+    }
+
+
+def run_sam2_coordinate_prompt_folders(
+    frames_dir: Path,
+    coordinates_dir: Path,
+    output_root: Path = DEFAULT_RAW_MASK_DATA_DIR,
+    predictor=None,
+    checkpoint: Optional[Path] = None,
+    config: str = DEFAULT_SAM2_CONFIG,
+    device: Optional[str] = None,
+    target_fps: float = 30.0,
+    source_fps: float = 30.0,
+    padding_ratio: float = 0.15,
+    score_threshold: float = 0.0,
+) -> Dict[str, Any]:
+    last_update = None
+    for update in iter_sam2_coordinate_prompt_folder_steps(
+        frames_dir=frames_dir,
+        coordinates_dir=coordinates_dir,
+        output_root=output_root,
+        predictor=predictor,
+        checkpoint=checkpoint,
+        config=config,
+        device=device,
+        target_fps=target_fps,
+        source_fps=source_fps,
+        padding_ratio=padding_ratio,
+        score_threshold=score_threshold,
+    ):
+        last_update = update
+
+    if last_update and last_update.get("result"):
+        return last_update["result"]
+    raise RuntimeError("SAM2 coordinate folder processing did not complete.")
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Generate SAM2 wound masks from raw frames and coordinate JSON prompts."
+    )
+    parser.add_argument("--frames-dir", required=True, type=Path)
+    parser.add_argument("--coordinates-dir", required=True, type=Path)
+    parser.add_argument("--output-root", type=Path, default=DEFAULT_RAW_MASK_DATA_DIR)
+    parser.add_argument("--target-fps", type=float, default=30.0)
+    parser.add_argument("--source-fps", type=float, default=30.0)
+    parser.add_argument("--padding-ratio", type=float, default=0.15)
+    parser.add_argument("--score-threshold", type=float, default=0.0)
+    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_SAM2_CHECKPOINT)
+    parser.add_argument("--config", default=DEFAULT_SAM2_CONFIG)
+    parser.add_argument("--device", default=None)
+    return parser
+
+
+def main(argv: Optional[Iterable[str]] = None) -> None:
+    args = build_arg_parser().parse_args(argv)
+    result = run_sam2_coordinate_prompt_folders(
+        frames_dir=args.frames_dir,
+        coordinates_dir=args.coordinates_dir,
+        output_root=args.output_root,
+        checkpoint=args.checkpoint,
+        config=args.config,
+        device=args.device,
+        target_fps=args.target_fps,
+        source_fps=args.source_fps,
+        padding_ratio=args.padding_ratio,
+        score_threshold=args.score_threshold,
+    )
+    print(f"processed_frames={result['processed_frames']}")
+    print(f"frames_dir={result['frames_dir']}")
+    print(f"coordinates_dir={result['coordinates_dir']}")
+    print(f"masks_dir={result['masks_dir']}")
+    print(f"previews_dir={result['previews_dir']}")
+    print(f"frames_zip={result['frames_zip']}")
+    print(f"masks_zip={result['masks_zip']}")
+    print(f"previews_zip={result['previews_zip']}")
+
+
+if __name__ == "__main__":
+    main()

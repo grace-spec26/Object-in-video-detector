@@ -56,11 +56,118 @@ def _as_point_array(points: Any, source: Path) -> np.ndarray:
     return coords
 
 
+def _as_optional_point_array(points: Any, source: Path) -> np.ndarray:
+    if points is None:
+        return np.empty((0, 2), dtype=np.float32)
+    coords = np.asarray(points, dtype=np.float32)
+    if coords.size == 0:
+        return np.empty((0, 2), dtype=np.float32)
+    if coords.ndim != 2 or coords.shape[1] != 2:
+        raise ValueError(f"Expected an array of [x, y] points in {source}")
+    return coords
+
+
 def _clamp_points(points: np.ndarray, image_width: int, image_height: int) -> np.ndarray:
     clamped = np.asarray(points, dtype=np.float32).copy()
     clamped[:, 0] = np.clip(clamped[:, 0], 0, image_width - 1)
     clamped[:, 1] = np.clip(clamped[:, 1], 0, image_height - 1)
     return clamped
+
+
+def _point_record_label(point: Dict[str, Any]) -> int:
+    if "label" in point:
+        return int(point["label"])
+    return 0 if str(point.get("type", "")).lower() == "negative" else 1
+
+
+def _point_records_to_arrays(
+    records: Sequence[Any],
+    source: Path,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    coords = []
+    labels = []
+    visible = []
+    for point in records:
+        if isinstance(point, dict):
+            if "x" not in point or "y" not in point:
+                raise ValueError(f"Point record missing x/y in {source}")
+            coords.append([float(point["x"]), float(point["y"])])
+            labels.append(_point_record_label(point))
+            visible.append(bool(point.get("visible", True)))
+        else:
+            raw_point = np.asarray(point, dtype=np.float32)
+            if raw_point.shape != (2,):
+                raise ValueError(f"Expected point records as [x, y] pairs in {source}")
+            coords.append([float(raw_point[0]), float(raw_point[1])])
+            labels.append(1)
+            visible.append(True)
+
+    if not coords:
+        return (
+            np.empty((0, 2), dtype=np.float32),
+            np.empty((0,), dtype=np.int32),
+            np.empty((0,), dtype=bool),
+        )
+    return (
+        np.asarray(coords, dtype=np.float32),
+        np.asarray(labels, dtype=np.int32),
+        np.asarray(visible, dtype=bool),
+    )
+
+
+def _labels_for_coords(labels: Any, coords: np.ndarray, source: Path) -> np.ndarray:
+    if labels is None:
+        return np.ones((len(coords),), dtype=np.int32)
+    label_array = np.asarray(labels, dtype=np.int32)
+    if label_array.ndim != 1 or len(label_array) != len(coords):
+        raise ValueError(f"point_labels length does not match point_coords in {source}")
+    return label_array
+
+
+def _filter_positive_visible_points(
+    coords: np.ndarray,
+    labels: Optional[np.ndarray] = None,
+    visible: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    mask = np.ones((len(coords),), dtype=bool)
+    if labels is not None:
+        mask &= labels == 1
+    if visible is not None:
+        mask &= visible
+    return coords[mask]
+
+
+def _positive_coords_from_object(
+    obj: Dict[str, Any],
+    source: Path,
+    visible_only: bool,
+) -> Tuple[np.ndarray, int]:
+    class_id = int(obj.get("class_id", 1))
+    point_records = obj.get("points") or []
+    visible_mask = None
+
+    if "positive_points" in obj:
+        coords = _as_optional_point_array(obj.get("positive_points"), source)
+        labels = None
+    elif "point_coords" in obj:
+        coords = _as_optional_point_array(obj.get("point_coords"), source)
+        labels = None
+        if obj.get("point_labels") is not None:
+            labels = _labels_for_coords(obj.get("point_labels"), coords, source)
+        elif point_records:
+            _, record_labels, record_visible = _point_records_to_arrays(point_records, source)
+            if len(record_labels) == len(coords):
+                labels = record_labels
+            if visible_only and len(record_visible) == len(coords):
+                visible_mask = record_visible
+    elif point_records:
+        coords, labels, record_visible = _point_records_to_arrays(point_records, source)
+        visible_mask = record_visible if visible_only else None
+    else:
+        raise ValueError(f"Unsupported object coordinate format in {source}")
+
+    coords = _filter_positive_visible_points(coords, labels=labels, visible=visible_mask)
+    return coords, class_id
 
 
 def _extract_positive_point_sets(
@@ -69,7 +176,13 @@ def _extract_positive_point_sets(
     visible_only: bool,
 ) -> List[Tuple[np.ndarray, int]]:
     if isinstance(data, list):
-        return [(_as_point_array(data, source), 1)]
+        if data and isinstance(data[0], dict):
+            coords, labels, record_visible = _point_records_to_arrays(data, source)
+            visible_mask = record_visible if visible_only else None
+            coords = _filter_positive_visible_points(coords, labels=labels, visible=visible_mask)
+            return [(coords, 1)]
+        coords = _as_point_array(data, source)
+        return [(coords, 1)]
 
     if not isinstance(data, dict):
         raise ValueError(f"Unsupported coordinate JSON format in {source}")
@@ -78,30 +191,28 @@ def _extract_positive_point_sets(
     if objects:
         point_sets: List[Tuple[np.ndarray, int]] = []
         for obj in objects:
-            raw_coords = obj.get("positive_points", obj.get("point_coords", []))
-            coords = _as_point_array(raw_coords, source)
-            labels = np.asarray(obj.get("point_labels", []), dtype=np.int32)
-            if "positive_points" not in obj and labels.ndim == 1 and len(labels) == len(coords):
-                coords = coords[labels == 1]
-
-            if visible_only and obj.get("points"):
-                visible_mask = np.asarray(
-                    [bool(point.get("visible", True)) for point in obj["points"]],
-                    dtype=bool,
-                )
-                if len(visible_mask) == len(coords):
-                    coords = coords[visible_mask]
-
+            coords, class_id = _positive_coords_from_object(obj, source, visible_only)
             if len(coords) > 0:
-                point_sets.append((coords, int(obj.get("class_id", 1))))
+                point_sets.append((coords, class_id))
 
         if not point_sets:
             raise ValueError(f"No positive points found in {source}")
         return point_sets
 
+    if isinstance(data.get("points"), list) and data["points"] and isinstance(data["points"][0], dict):
+        coords, labels, record_visible = _point_records_to_arrays(data["points"], source)
+        visible_mask = record_visible if visible_only else None
+        coords = _filter_positive_visible_points(coords, labels=labels, visible=visible_mask)
+        return [(coords, int(data.get("class_id", 1)))]
+
     for key in ("point_coords", "points", "coordinates"):
         if key in data:
-            return [(_as_point_array(data[key], source), int(data.get("class_id", 1)))]
+            coords = _as_point_array(data[key], source)
+            labels = None
+            if data.get("point_labels") is not None:
+                labels = _labels_for_coords(data.get("point_labels"), coords, source)
+            coords = _filter_positive_visible_points(coords, labels=labels)
+            return [(coords, int(data.get("class_id", 1)))]
 
     raise ValueError(f"Unsupported coordinate JSON format in {source}")
 
@@ -431,6 +542,7 @@ def iter_coordinate_prompt_folder_steps(
     frames_output_dir = output_root / "frames"
     coordinates_output_dir = output_root / "coordinates"
     masks_output_dir = output_root / "mask"
+    previews_output_dir = output_root / "masked_frame"
 
     if not frames_dir.exists():
         raise FileNotFoundError(f"Frames directory not found: {frames_dir}")
@@ -457,6 +569,7 @@ def iter_coordinate_prompt_folder_steps(
     _clear_matching_files(frames_output_dir, ("*.png", "*.jpg", "*.jpeg"))
     _clear_matching_files(coordinates_output_dir, ("*.json",))
     _clear_matching_files(masks_output_dir, ("*.png", "*.jpg", "*.jpeg"))
+    _clear_matching_files(previews_output_dir, ("*.png", "*.jpg", "*.jpeg"))
 
     if predictor is None:
         predictor = load_predictor(checkpoint=checkpoint, device=device)
@@ -479,6 +592,7 @@ def iter_coordinate_prompt_folder_steps(
             frame_path=frame_path,
             coordinate_json_path=coordinates_dir / f"{frame_path.stem}.json",
             mask_path=masks_output_dir / f"{frame_path.stem}.png",
+            preview_path=previews_output_dir / f"{frame_path.stem}.jpg",
             augmented_coordinate_json_path=coordinates_output_dir / f"{frame_path.stem}.json",
             padding_ratio=float(padding_ratio),
             score_threshold=score_threshold,
@@ -495,14 +609,17 @@ def iter_coordinate_prompt_folder_steps(
 
     frames_zip = _make_zip_archive(frames_output_dir, output_root / "frames.zip")
     masks_zip = _make_zip_archive(masks_output_dir, output_root / "mask.zip")
+    previews_zip = _make_zip_archive(previews_output_dir, output_root / "masked_frame.zip")
     result = {
         "processed_frames": len(selected_frame_paths),
         "frame_paths": selected_frame_paths,
         "frames_dir": frames_output_dir,
         "coordinates_dir": coordinates_output_dir,
         "masks_dir": masks_output_dir,
+        "previews_dir": previews_output_dir,
         "frames_zip": frames_zip,
         "masks_zip": masks_zip,
+        "previews_zip": previews_zip,
     }
 
     yield {
@@ -710,8 +827,10 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         print(f"frames_dir={result['frames_dir']}")
         print(f"coordinates_dir={result['coordinates_dir']}")
         print(f"masks_dir={result['masks_dir']}")
+        print(f"previews_dir={result['previews_dir']}")
         print(f"frames_zip={result['frames_zip']}")
         print(f"masks_zip={result['masks_zip']}")
+        print(f"previews_zip={result['previews_zip']}")
         return
 
     run_directory(

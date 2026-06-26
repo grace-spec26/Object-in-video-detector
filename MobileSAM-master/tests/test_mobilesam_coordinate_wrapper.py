@@ -15,6 +15,7 @@ from mobilesam_coordinate_wrapper import (  # noqa: E402
     format_coordinate_progress_html,
     iter_coordinate_prompt_folder_steps,
     prepare_coordinate_prompt_json,
+    run_mobilesam_for_frame,
     run_coordinate_prompt_folders,
     select_frames_for_target_fps,
 )
@@ -103,6 +104,98 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertEqual(augmented["objects"][0]["point_labels"], [1, 1, 0, 0, 0, 0])
             self.assertEqual(len(prompt_objects), 1)
 
+    def test_prepare_coordinate_prompt_json_generates_negatives_from_source_positives(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            source_path = tmp_path / "frame_000000.json"
+            output_path = tmp_path / "raw-mask-data" / "coordinates" / "frame_000000.json"
+            source_path.write_text(
+                json.dumps(
+                    {
+                        "objects": [
+                            {
+                                "class_id": 1,
+                                "point_coords": [[1.0, 1.0], [2.0, 2.0], [3.0, 3.0]],
+                                "point_labels": [1, 0, 1],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            prompt_objects = prepare_coordinate_prompt_json(
+                source_path,
+                image_width=20,
+                image_height=20,
+                output_path=output_path,
+                padding_ratio=0.15,
+            )
+
+            augmented = json.loads(output_path.read_text(encoding="utf-8"))
+            obj = augmented["objects"][0]
+            np.testing.assert_allclose(
+                obj["point_coords"],
+                [
+                    [1.0, 1.0],
+                    [3.0, 3.0],
+                    [0.7, 0.7],
+                    [3.3, 0.7],
+                    [3.3, 3.3],
+                    [0.7, 3.3],
+                ],
+            )
+            self.assertEqual(obj["point_labels"], [1, 1, 0, 0, 0, 0])
+            self.assertEqual(obj["positive_points"], [[1.0, 1.0], [3.0, 3.0]])
+            np.testing.assert_allclose(
+                obj["negative_points"],
+                [[0.7, 0.7], [3.3, 0.7], [3.3, 3.3], [0.7, 3.3]],
+            )
+            self.assertEqual(prompt_objects[0][1].tolist(), [1, 1, 0, 0, 0, 0])
+
+    def test_run_mobilesam_for_frame_passes_generated_negative_labels_to_predictor(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            frame_path = tmp_path / "frame_000000.png"
+            coordinate_path = tmp_path / "frame_000000.json"
+            mask_path = tmp_path / "mask" / "frame_000000.png"
+            preview_path = tmp_path / "masked_frame" / "frame_000000.jpg"
+            augmented_path = tmp_path / "coordinates" / "frame_000000.json"
+
+            Image.fromarray(np.zeros((6, 6, 3), dtype=np.uint8)).save(frame_path)
+            coordinate_path.write_text(
+                json.dumps(
+                    {
+                        "objects": [
+                            {
+                                "class_id": 1,
+                                "point_coords": [[1.0, 1.0], [4.0, 4.0]],
+                                "point_labels": [1, 0],
+                            }
+                        ]
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            predictor = FakePredictor()
+            run_mobilesam_for_frame(
+                predictor=predictor,
+                frame_path=frame_path,
+                coordinate_json_path=coordinate_path,
+                mask_path=mask_path,
+                preview_path=preview_path,
+                augmented_coordinate_json_path=augmented_path,
+            )
+
+            np.testing.assert_allclose(
+                predictor.calls[0]["coords"],
+                [[1.0, 1.0], [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            )
+            self.assertEqual(predictor.calls[0]["labels"], [1, 0, 0, 0, 0])
+            self.assertTrue(mask_path.exists())
+            self.assertTrue(preview_path.exists())
+
     def test_select_frames_for_target_fps_uses_source_fps_stride(self):
         frame_paths = [Path(f"frame_{index:06d}.png") for index in range(13)]
 
@@ -153,8 +246,10 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertTrue((output_root / "frames" / "frame_000000.png").exists())
             self.assertTrue((output_root / "coordinates" / "frame_000000.json").exists())
             self.assertTrue((output_root / "mask" / "frame_000000.png").exists())
+            self.assertTrue((output_root / "masked_frame" / "frame_000000.jpg").exists())
             self.assertTrue(result["frames_zip"].exists())
             self.assertTrue(result["masks_zip"].exists())
+            self.assertTrue(result["previews_zip"].exists())
             self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0])
 
     def test_iter_coordinate_prompt_folder_steps_yields_per_frame_updates(self):
@@ -192,6 +287,7 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertEqual(updates[-1]["stage"], "done")
             self.assertTrue(updates[-1]["result"]["frames_zip"].exists())
             self.assertTrue(updates[-1]["result"]["masks_zip"].exists())
+            self.assertTrue(updates[-1]["result"]["previews_zip"].exists())
 
     def test_format_coordinate_progress_html_renders_visible_bar(self):
         html = format_coordinate_progress_html(
