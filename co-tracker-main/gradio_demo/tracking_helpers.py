@@ -18,6 +18,23 @@ _MODEL_CACHE = {}
 _LOCAL_COTRACKER_REPO = Path(__file__).resolve().parents[1]
 
 
+def parse_max_frame_count(value) -> int:
+    """Return a non-negative frame cap; 0 means load the full uploaded video."""
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 0
+
+    try:
+        max_frames = int(float(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Max frames to load must be a whole number. Use 0 to load all frames.") from exc
+
+    return max(0, max_frames)
+
+
 def _even(value: int) -> int:
     return max(2, value - (value % 2))
 

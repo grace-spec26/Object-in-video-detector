@@ -13,6 +13,7 @@ from tracking_helpers import (  # noqa: E402
     get_online_chunk_start_indices,
     get_tracking_resolution,
     map_frame_index_to_sampled,
+    parse_max_frame_count,
     resolve_torch_device,
     resize_video_for_tracking,
     subsample_video_tensor,
@@ -61,6 +62,20 @@ class FakeTorch:
 
 
 class TrackingHelpersTest(unittest.TestCase):
+    def test_parse_max_frame_count_uses_zero_for_full_video(self):
+        self.assertEqual(parse_max_frame_count(None), 0)
+        self.assertEqual(parse_max_frame_count(""), 0)
+        self.assertEqual(parse_max_frame_count(0), 0)
+        self.assertEqual(parse_max_frame_count(-5), 0)
+
+    def test_parse_max_frame_count_accepts_gradio_number_values(self):
+        self.assertEqual(parse_max_frame_count("300"), 300)
+        self.assertEqual(parse_max_frame_count(300.0), 300)
+
+    def test_parse_max_frame_count_rejects_non_numeric_values(self):
+        with self.assertRaisesRegex(ValueError, "whole number"):
+            parse_max_frame_count("not-a-number")
+
     def test_resolve_torch_device_prefers_cuda_then_mps_then_cpu(self):
         self.assertEqual(resolve_torch_device(FakeTorch(cuda_available=True, mps_available=True)), "cuda")
         self.assertEqual(resolve_torch_device(FakeTorch(cuda_available=False, mps_available=True)), "mps")

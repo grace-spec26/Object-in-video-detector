@@ -4,6 +4,9 @@
 
 import os
 os.environ["PYTORCH_ENABLE_MPS_FALLBACK"] = "0"
+os.environ["GRADIO_SKIP_PYI_GENERATION"] = "1"
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
 import sys
 import uuid
@@ -37,6 +40,7 @@ try:
         get_cached_cotracker_model,
         get_online_chunk_start_indices,
         map_frame_index_to_sampled,
+        parse_max_frame_count,
         resolve_torch_device,
         resize_video_for_tracking,
         subsample_video_tensor,
@@ -56,6 +60,7 @@ except ImportError:
         get_cached_cotracker_model,
         get_online_chunk_start_indices,
         map_frame_index_to_sampled,
+        parse_max_frame_count,
         resolve_torch_device,
         resize_video_for_tracking,
         subsample_video_tensor,
@@ -234,7 +239,7 @@ def paint_point_track(
 
 PREVIEW_WIDTH = 768 # Width of the preview video
 POINT_SIZE = 4 # Size of the query point in the preview video
-FRAME_LIMIT = 300 # Limit the number of frames to process
+DEFAULT_MAX_FRAMES = parse_max_frame_count(os.environ.get("COTRACKER_MAX_FRAMES", "0"))
 
 
 def get_point(frame_num, video_queried_preview, query_points, query_points_color, query_count, evt: gr.SelectData):
@@ -335,14 +340,26 @@ def choose_frame(frame_num, video_preview_array):
     return video_preview_array[int(frame_num)]
 
 
-def preprocess_video_input(video_path, tracking_resolution):
+def preprocess_video_input(video_path, tracking_resolution, max_frames):
+    if video_path is None:
+        raise gr.Error("Please upload a video before submitting.")
+
+    try:
+        max_frames_to_load = parse_max_frame_count(max_frames)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+
     video_arr = mediapy.read_video(video_path)
     video_fps = video_arr.metadata.fps
     num_frames = video_arr.shape[0]
-    if num_frames > FRAME_LIMIT:
-        gr.Warning(f"The video is too long. Only the first {FRAME_LIMIT} frames will be used.", duration=5)
-        video_arr = video_arr[:FRAME_LIMIT]
-        num_frames = FRAME_LIMIT
+    original_num_frames = num_frames
+    if max_frames_to_load and num_frames > max_frames_to_load:
+        gr.Warning(
+            f"Only the first {max_frames_to_load} of {original_num_frames} frames will be used.",
+            duration=5,
+        )
+        video_arr = video_arr[:max_frames_to_load]
+        num_frames = max_frames_to_load
 
     # Resize to preview size for faster processing, width = PREVIEW_WIDTH
     height, width = video_arr.shape[1:3]
@@ -355,6 +372,13 @@ def preprocess_video_input(video_path, tracking_resolution):
     input_video = np.array(input_video)
     
     interactive = True
+
+    load_status = f"Loaded {num_frames} frames for point selection."
+    if num_frames != original_num_frames:
+        load_status = (
+            f"Loaded first {num_frames} of {original_num_frames} frames for point selection. "
+            "Set Max frames to load to 0 to use the full video."
+        )
 
     return (
         video_arr, # Original video
@@ -378,7 +402,7 @@ def preprocess_video_input(video_path, tracking_resolution):
         None,
         gr.update(interactive=False),
         gr.update(interactive=False),
-        "",
+        load_status,
     )
 
 
@@ -580,6 +604,12 @@ with gr.Blocks() as demo:
                 label="Tracking Resolution",
                 interactive=True,
             )
+            max_frames_input = gr.Number(
+                value=DEFAULT_MAX_FRAMES,
+                precision=0,
+                label="Max frames to load (0 = full video)",
+                interactive=True,
+            )
             submit = gr.Button("Submit", scale=0)
 
             import os
@@ -646,7 +676,7 @@ with gr.Blocks() as demo:
 
     submit.click(
         fn = preprocess_video_input, 
-        inputs = [video_in, tracking_resolution],
+        inputs = [video_in, tracking_resolution, max_frames_input],
         outputs = [
             video,
             video_preview,
