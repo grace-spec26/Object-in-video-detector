@@ -1,0 +1,2697 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Video Frame Extractor</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          Oxygen, Ubuntu, Cantarell, sans-serif;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        min-height: 100vh;
+        padding: 20px;
+      }
+
+      .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+        padding: 30px;
+      }
+
+      h1 {
+        color: #333;
+        margin-bottom: 10px;
+        font-size: 2em;
+      }
+
+      .subtitle {
+        color: #666;
+        margin-bottom: 30px;
+      }
+
+      .upload-section {
+        border: 2px dashed #667eea;
+        border-radius: 8px;
+        padding: 40px;
+        text-align: center;
+        margin-bottom: 30px;
+        background: #f8f9ff;
+        transition: all 0.3s;
+      }
+
+      .upload-section:hover {
+        border-color: #764ba2;
+        background: #f0f2ff;
+      }
+
+      .upload-section.dragover {
+        border-color: #764ba2;
+        background: #e8ebff;
+      }
+
+      input[type='file'] {
+        display: none;
+      }
+
+      .upload-btn {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 12px 30px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 16px;
+        font-weight: 600;
+        transition: transform 0.2s, box-shadow 0.2s;
+      }
+
+      .upload-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+      }
+
+      .video-preview {
+        margin: 20px 0;
+        text-align: center;
+      }
+
+      video {
+        max-width: 100%;
+        border-radius: 8px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+      }
+
+      .snapshot-section {
+        text-align: center;
+        margin: 20px 0;
+      }
+
+      .snapshot-btn {
+        background: linear-gradient(135deg, #28a745 0%, #20c997 100%);
+        color: white;
+        padding: 12px 30px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 16px;
+        font-weight: 600;
+        transition: transform 0.2s, box-shadow 0.2s;
+      }
+
+      .snapshot-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(40, 167, 69, 0.4);
+      }
+
+      .controls {
+        margin: 30px 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+      }
+
+      .control-inputs {
+        display: inline-grid;
+        grid-template-columns: repeat(2, auto);
+        gap: 20px;
+        margin-bottom: 20px;
+      }
+
+      @media (min-width: 768px) {
+        .control-inputs {
+          grid-template-columns: repeat(4, auto);
+        }
+      }
+
+      .control-buttons {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 15px;
+      }
+
+      .buttons-row {
+        display: flex;
+        gap: 15px;
+        justify-content: center;
+      }
+
+      .control-group {
+        background: #f8f9ff;
+        padding: 20px;
+        border-radius: 8px;
+        text-align: center;
+        width: 100%;
+        box-sizing: border-box;
+      }
+
+      .control-group label {
+        display: block;
+        margin-bottom: 8px;
+        color: #333;
+        font-weight: 600;
+      }
+
+      .control-group label small {
+        font-weight: 400;
+        color: #666;
+        font-size: 0.9em;
+      }
+
+      .control-group select,
+      .control-group input[type='number'],
+      .control-group input[type='text'] {
+        text-align: center;
+      }
+
+      .time-input-group {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .time-input-group input {
+        flex: 1;
+      }
+
+      .time-set-btn {
+        background: #667eea;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        padding: 8px 12px;
+        cursor: pointer;
+        font-size: 16px;
+        transition: background 0.2s;
+        white-space: nowrap;
+      }
+
+      .time-set-btn:hover {
+        background: #5568d3;
+      }
+
+      .time-set-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .control-group input {
+        width: 100%;
+        padding: 10px;
+        border: 2px solid #e0e0e0;
+        border-radius: 6px;
+        font-size: 14px;
+      }
+
+      .control-group input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .control-group select {
+        width: 100%;
+        padding: 10px;
+        border: 2px solid #e0e0e0;
+        border-radius: 6px;
+        font-size: 14px;
+        background: white;
+      }
+
+      .extract-btn {
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        color: white;
+        padding: 15px 40px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 18px;
+        font-weight: 600;
+        transition: transform 0.2s, box-shadow 0.2s;
+        white-space: nowrap;
+      }
+
+      .extract-btn:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+      }
+
+      .extract-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .stop-btn {
+        background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+        color: white;
+        padding: 15px 40px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 18px;
+        font-weight: 600;
+        transition: transform 0.2s, box-shadow 0.2s;
+        white-space: nowrap;
+      }
+
+      .stop-btn:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(220, 53, 69, 0.4);
+      }
+
+      .progress {
+        width: 100%;
+        max-width: 500px;
+        margin: 0;
+        display: none;
+      }
+
+      .progress.active {
+        display: block;
+      }
+
+      .progress-bar {
+        width: 100%;
+        height: 30px;
+        background: #e0e0e0;
+        border-radius: 15px;
+        overflow: hidden;
+      }
+
+      .progress-fill {
+        height: 100%;
+        background: linear-gradient(90deg, #667eea 0%, #764ba2 100%);
+        width: 0%;
+        transition: width 0.3s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        font-weight: 600;
+      }
+
+      .preview-section {
+        margin-top: 30px;
+      }
+
+      .preview-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+        gap: 15px;
+      }
+
+      .preview-header h2 {
+        margin: 0;
+      }
+
+      .preview-actions {
+        display: flex;
+        gap: 10px;
+      }
+
+      .preview-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+        gap: 15px;
+        margin-top: 20px;
+      }
+
+      .preview-item {
+        position: relative;
+        border-radius: 8px;
+        overflow: hidden;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+        background: #f0f0f0;
+      }
+
+      .preview-item img {
+        width: 100%;
+        height: auto;
+        display: block;
+      }
+
+      .preview-item .frame-number {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        background: rgba(0, 0, 0, 0.7);
+        color: white;
+        padding: 5px;
+        text-align: center;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .preview-item .delete-btn {
+        position: absolute;
+        top: 5px;
+        right: 5px;
+        background: rgba(220, 53, 69, 0.9);
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 28px;
+        height: 28px;
+        cursor: pointer;
+        font-size: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s, transform 0.2s;
+        z-index: 10;
+      }
+
+      .preview-item .delete-btn:hover {
+        background: rgba(220, 53, 69, 1);
+        transform: scale(1.1);
+      }
+
+      .download-btn {
+        background: #28a745;
+        color: white;
+        padding: 8px 20px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        transition: transform 0.2s, box-shadow 0.2s;
+        white-space: nowrap;
+      }
+
+      .download-btn:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(40, 167, 69, 0.4);
+      }
+
+      .download-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .remove-all-btn {
+        background: linear-gradient(135deg, #dc3545 0%, #c82333 100%);
+        color: white;
+        padding: 8px 20px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        transition: transform 0.2s, box-shadow 0.2s;
+        white-space: nowrap;
+      }
+
+      .remove-all-btn:hover:not(:disabled) {
+        transform: translateY(-2px);
+        box-shadow: 0 5px 15px rgba(220, 53, 69, 0.4);
+      }
+
+      .remove-all-btn:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .hidden {
+        display: none;
+      }
+
+      .error {
+        background: #f8d7da;
+        color: #721c24;
+        padding: 15px;
+        border-radius: 6px;
+        margin: 20px 0;
+      }
+
+      /* Segments UI */
+      .segments-section {
+        margin: 20px 0;
+      }
+
+      .segments-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      .segments-header h3 {
+        margin: 0;
+        color: #333;
+      }
+
+      .segment-mode-toggle {
+        display: flex;
+        gap: 4px;
+        background: #e8e8e8;
+        border-radius: 6px;
+        padding: 3px;
+      }
+
+      .segment-mode-toggle label {
+        padding: 4px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        color: #666;
+        transition: all 0.2s;
+        -webkit-user-select: none;
+        user-select: none;
+      }
+
+      .segment-mode-toggle label.active {
+        background: white;
+        color: #333;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+      }
+
+      .segment-mode-toggle input {
+        display: none;
+      }
+
+      .segment-list {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+      }
+
+      .segment-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        background: #f8f9ff;
+        padding: 10px 12px;
+        border-radius: 8px;
+        border: 1px solid #e0e0e0;
+        flex-wrap: wrap;
+      }
+
+      .segment-label {
+        font-weight: 600;
+        color: #333;
+        min-width: 70px;
+        font-size: 14px;
+      }
+
+      .segment-time-group {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      .segment-time-group label {
+        font-size: 12px;
+        color: #666;
+        font-weight: 500;
+      }
+
+      .segment-time-group input {
+        width: 90px;
+        padding: 6px 8px;
+        border: 2px solid #e0e0e0;
+        border-radius: 6px;
+        font-size: 13px;
+        text-align: center;
+      }
+
+      .segment-time-group input:focus {
+        outline: none;
+        border-color: #667eea;
+      }
+
+      .segment-set-btn {
+        background: #667eea;
+        color: white;
+        border: none;
+        border-radius: 4px;
+        padding: 6px 10px;
+        cursor: pointer;
+        font-size: 14px;
+        transition: background 0.2s;
+        line-height: 1;
+      }
+
+      .segment-set-btn:hover {
+        background: #5568d3;
+      }
+
+      .segment-set-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+
+      .segment-remove-btn {
+        background: #dc3545;
+        color: white;
+        border: none;
+        border-radius: 50%;
+        width: 26px;
+        height: 26px;
+        cursor: pointer;
+        font-size: 14px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: background 0.2s, transform 0.2s;
+        line-height: 1;
+        margin-left: auto;
+      }
+
+      .segment-remove-btn:hover {
+        background: #c82333;
+        transform: scale(1.1);
+      }
+
+      .add-segment-btn {
+        background: #667eea;
+        color: white;
+        padding: 8px 18px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 600;
+        transition: background 0.2s;
+        white-space: nowrap;
+      }
+
+      .add-segment-btn:hover {
+        background: #5568d3;
+      }
+
+      #addSegmentBottomBtn {
+        margin-top: 10px;
+        width: 100%;
+        padding: 10px;
+      }
+
+      kbd {
+        display: inline-block;
+        min-width: 1.2em;
+        padding: 1px 5px;
+        font: 11px monospace;
+        text-align: center;
+        border: 1px solid #bbb;
+        border-radius: 3px;
+        background: #f7f7f7;
+        color: #333;
+        box-shadow: 0 1px 0 #bbb;
+      }
+
+      /* Timeline */
+      .scene-chart-section {
+        margin: 0;
+        padding: 0 15px;
+        background: #f0f0f5;
+        border-left: 1px solid #e0e0e0;
+        border-right: 1px solid #e0e0e0;
+      }
+
+      .scene-chart-btn {
+        display: block;
+        margin: 6px auto;
+        padding: 4px 14px;
+        border: 1px solid #667eea;
+        background: #fff;
+        color: #667eea;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+      }
+
+      .scene-chart-btn:hover {
+        background: #667eea;
+        color: #fff;
+      }
+
+      .scene-chart-loading {
+        font-size: 11px;
+        color: #888;
+        text-align: center;
+        padding: 10px 0;
+      }
+
+      #sceneChartCanvas {
+        display: block;
+        width: 100%;
+        height: 120px;
+      }
+
+      .timeline-section {
+        margin: 0 0 20px 0;
+        padding: 15px;
+        background: #f8f9ff;
+        border-radius: 0 0 8px 8px;
+        border: 1px solid #e0e0e0;
+        border-top: none;
+      }
+
+      .timeline-bar-container {
+        position: relative;
+        width: 100%;
+        height: 36px;
+        background: #e8e8e8;
+        border-radius: 6px;
+        overflow: hidden;
+        margin-bottom: 6px;
+      }
+
+      .timeline-segment {
+        position: absolute;
+        top: 2px;
+        bottom: 2px;
+        border-radius: 4px;
+        border: 2px solid;
+        cursor: pointer;
+        transition: opacity 0.2s;
+        min-width: 2px;
+      }
+
+      .timeline-segment:hover {
+        opacity: 0.8;
+      }
+
+      .timeline-playhead {
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        width: 2px;
+        background: #ff4444;
+        pointer-events: none;
+        z-index: 10;
+        transform: translateX(-50%);
+        display: none;
+      }
+
+      .timeline-playhead::before,
+      .timeline-playhead::after {
+        content: '';
+        position: absolute;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 0;
+        height: 0;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+      }
+
+      .timeline-playhead::before {
+        top: -4px;
+        border-bottom: 6px solid #ff4444;
+      }
+
+      .timeline-playhead::after {
+        bottom: -4px;
+        border-top: 6px solid #ff4444;
+      }
+
+      .timeline-segment-label {
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 10px;
+        font-weight: 700;
+        color: rgba(0, 0, 0, 0.6);
+        white-space: nowrap;
+        pointer-events: none;
+      }
+
+      .timeline-labels {
+        display: flex;
+        justify-content: space-between;
+        font-size: 12px;
+        color: #888;
+      }
+
+      .timeline-labels span {
+        font-variant-numeric: tabular-nums;
+      }
+
+      .empty-segments-msg {
+        text-align: center;
+        color: #999;
+        padding: 15px;
+        font-style: italic;
+        font-size: 14px;
+      }
+
+      .segment-toolbar {
+        display: flex;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+
+      .segment-toolbar-btn {
+        background: #667eea;
+        color: white;
+        padding: 5px 12px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 13px;
+        font-weight: 500;
+        transition: background 0.2s;
+      }
+
+      .segment-toolbar-btn:hover {
+        background: #5568d3;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <h1>🎬 Video Frame Extractor</h1>
+      <p class="subtitle">Extract frames from videos locally in your browser</p>
+
+      <div class="upload-section" id="uploadSection">
+        <p style="margin-bottom: 20px; color: #666">
+          Drop a video file here or click to browse
+        </p>
+        <input type="file" id="videoInput" accept="video/*" />
+        <button
+          class="upload-btn"
+          onclick="document.getElementById('videoInput').click()"
+        >
+          Choose Video File
+        </button>
+      </div>
+
+      <div class="controls hidden" id="controls">
+        <div class="control-inputs">
+          <div class="control-group">
+            <label for="extractMode">Extraction Mode</label>
+            <select id="extractMode">
+              <option value="interval">By Interval (seconds)</option>
+              <option value="count">By Total Count</option>
+            </select>
+          </div>
+          <div class="control-group">
+            <label id="valueLabel" for="extractValue">Interval (seconds)</label>
+            <input
+              type="number"
+              id="extractValue"
+              min="0.1"
+              step="0.1"
+              value="1"
+            />
+          </div>
+        </div>
+        <div class="segments-section">
+          <div class="segments-header">
+            <h3>Segments</h3>
+            <div class="segment-mode-toggle">
+              <label class="active" data-mode="points">
+                <input type="radio" name="segmentMode" value="points" checked />
+                Cutting Points
+              </label>
+              <label data-mode="explicit">
+                <input type="radio" name="segmentMode" value="explicit" />
+                Explicit
+              </label>
+            </div>
+          </div>
+          <div class="segment-toolbar">
+            <button type="button" class="segment-toolbar-btn" id="exportSegmentsBtn">Export</button>
+            <button type="button" class="segment-toolbar-btn" id="importSegmentsBtn">Import</button>
+            <input type="file" id="importFileInput" accept=".json" hidden />
+          </div>
+          <div class="segment-list" id="segmentList"></div>
+          <button type="button" class="add-segment-btn" id="addSegmentBottomBtn">+ Add Segment <kbd>A</kbd></button>
+          <div style="font-size:11px;color:#999;padding:4px 0 0 0;text-align:center"><kbd>S</kbd> set start &nbsp; <kbd>E</kbd> set end</div>
+        </div>
+      </div>
+
+      <div class="video-preview hidden" id="videoPreview">
+        <video id="video" controls></video>
+      </div>
+
+      <div class="scene-chart-section hidden" id="sceneChartSection">
+        <button class="scene-chart-btn" id="analyzeScenesBtn">📊 Detect Camera Switches</button>
+        <div class="scene-chart-loading hidden" id="sceneChartLoading">Detecting camera switches...</div>
+        <canvas id="sceneChartCanvas" height="120" style="cursor:pointer"></canvas>
+      </div>
+
+      <div class="timeline-section hidden" id="timelineSection">
+        <div class="timeline-bar-container" id="timelineBarContainer">
+          <div id="timelineSegments"></div>
+          <div class="timeline-playhead" id="timelinePlayhead"></div>
+        </div>
+        <div class="timeline-labels" id="timelineLabels">
+          <span id="timelineStartLabel">0:00</span>
+          <span id="timelineEndLabel">0:00</span>
+        </div>
+      </div>
+
+      <div class="snapshot-section hidden" id="snapshotSection">
+        <button class="snapshot-btn" id="snapshotBtn">
+          📸 Capture Current Frame <kbd>C</kbd>
+        </button>
+      </div>
+
+      <div class="control-buttons hidden">
+        <div class="buttons-row">
+          <button class="extract-btn" id="extractBtn" disabled>
+            Extract Frames
+          </button>
+          <button class="stop-btn hidden" id="stopBtn">
+            ⏹ Stop Extraction
+          </button>
+        </div>
+        <div class="progress hidden" id="progress">
+          <div class="progress-bar">
+            <div class="progress-fill" id="progressFill">0%</div>
+          </div>
+        </div>
+      </div>
+
+      <div id="error" class="error hidden"></div>
+
+      <div class="preview-section hidden" id="previewSection">
+        <div class="preview-header">
+          <h2>Extracted Frames (<span id="frameCount">0</span>)</h2>
+          <div class="preview-actions">
+            <button class="download-btn" id="downloadBtn" disabled>
+              Download as ZIP
+            </button>
+            <button class="remove-all-btn hidden" id="removeAllBtn" disabled>
+              🗑️ Remove All
+            </button>
+          </div>
+        </div>
+        <div class="preview-grid" id="previewGrid"></div>
+      </div>
+    </div>
+
+    <script>
+      let videoFile = null
+      let videoFileName = ''
+      let extractedFrames = []
+      let videoElement = null
+      let shouldStopExtraction = false
+      let shouldStopAnalysis = false
+      let frameIdCounter = 0
+      let segmentMode = 'points'
+      let cutPoints = []
+      let explicitSegments = []
+      let segmentIdCounter = 0
+      let sceneDeltas = [] // { time, delta } array, delta normalized 0-1
+      let isAnalyzing = false
+      let chartView = { start: 0, end: 0 } // visible range; 0=fit all
+
+      const uploadSection = document.getElementById('uploadSection')
+      const videoInput = document.getElementById('videoInput')
+      const videoPreview = document.getElementById('videoPreview')
+      const video = document.getElementById('video')
+      const controls = document.getElementById('controls')
+      const extractMode = document.getElementById('extractMode')
+      const extractValue = document.getElementById('extractValue')
+      const valueLabel = document.getElementById('valueLabel')
+      const extractBtn = document.getElementById('extractBtn')
+      const progress = document.getElementById('progress')
+      const progressFill = document.getElementById('progressFill')
+      const previewSection = document.getElementById('previewSection')
+      const previewGrid = document.getElementById('previewGrid')
+      const downloadBtn = document.getElementById('downloadBtn')
+      const removeAllBtn = document.getElementById('removeAllBtn')
+      const errorDiv = document.getElementById('error')
+      const snapshotBtn = document.getElementById('snapshotBtn')
+      const snapshotSection = document.getElementById('snapshotSection')
+      const stopBtn = document.getElementById('stopBtn')
+      const frameCount = document.getElementById('frameCount')
+      const segmentList = document.getElementById('segmentList')
+      const timelineSection = document.getElementById('timelineSection')
+      const timelineSegments = document.getElementById('timelineSegments')
+      const timelineStartLabel = document.getElementById('timelineStartLabel')
+      const timelineEndLabel = document.getElementById('timelineEndLabel')
+      const timelinePlayhead = document.getElementById('timelinePlayhead')
+      const sceneChartSection = document.getElementById('sceneChartSection')
+      const sceneChartCanvas = document.getElementById('sceneChartCanvas')
+      const sceneChartLoading = document.getElementById('sceneChartLoading')
+      const analyzeScenesBtn = document.getElementById('analyzeScenesBtn')
+      const exportSegmentsBtn = document.getElementById('exportSegmentsBtn')
+      const importSegmentsBtn = document.getElementById('importSegmentsBtn')
+      const importFileInput = document.getElementById('importFileInput')
+      const addSegmentBottomBtn = document.getElementById('addSegmentBottomBtn')
+
+      // Drag and drop
+      uploadSection.addEventListener('dragover', e => {
+        e.preventDefault()
+        uploadSection.classList.add('dragover')
+      })
+
+      uploadSection.addEventListener('dragleave', () => {
+        uploadSection.classList.remove('dragover')
+      })
+
+      uploadSection.addEventListener('drop', e => {
+        e.preventDefault()
+        uploadSection.classList.remove('dragover')
+        const files = e.dataTransfer.files
+        if (files.length > 0 && files[0].type.startsWith('video/')) {
+          handleVideoFile(files[0])
+        } else {
+          showError('Please drop a valid video file')
+        }
+      })
+
+      videoInput.addEventListener('change', e => {
+        if (e.target.files.length > 0) {
+          handleVideoFile(e.target.files[0])
+        }
+      })
+
+      // Check if Firefox has persisted a file on page load
+      if (videoInput.files.length > 0) {
+        handleVideoFile(videoInput.files[0])
+      }
+
+      // Update label on page load (handles Firefox stored values)
+      updateValueLabel()
+
+      extractMode.addEventListener('change', () => {
+        updateValueLabel()
+      })
+
+      // Parse time input (supports mm:ss.sss, mm:ss, or plain seconds)
+      function parseTimeInput(input) {
+        if (!input || input.trim() === '' || input === '0') {
+          return 0
+        }
+
+        // Try to parse as mm:ss.sss or mm:ss format
+        const timeMatch = input.match(/^(\d+):(\d+)(?:\.(\d+))?$/)
+        if (timeMatch) {
+          const minutes = parseInt(timeMatch[1], 10)
+          const seconds = parseInt(timeMatch[2], 10)
+          const milliseconds = timeMatch[3]
+            ? parseFloat('0.' + timeMatch[3])
+            : 0
+          return minutes * 60 + seconds + milliseconds
+        }
+
+        // Try to parse as plain number (seconds)
+        const numValue = parseFloat(input)
+        if (!isNaN(numValue)) {
+          return numValue
+        }
+
+        return null // Invalid format
+      }
+
+      // Format seconds to mm:ss.sss or mm:ss
+      function formatTime(seconds) {
+        if (seconds === 0) return '0'
+        const mins = Math.floor(seconds / 60)
+        const secs = seconds % 60
+        if (secs % 1 === 0) {
+          // No decimal part, use mm:ss
+          return `${mins}:${String(Math.floor(secs)).padStart(2, '0')}`
+        } else {
+          // Has decimal part, use mm:ss.sss
+          const secsStr = secs.toFixed(3)
+          return `${mins}:${secsStr.padStart(6, '0')}`
+        }
+      }
+
+      function updateValueLabel() {
+        if (extractMode.value === 'interval') {
+          valueLabel.textContent = 'Interval (seconds)'
+          extractValue.min = '0.1'
+          extractValue.step = '0.1'
+          // Only set default if value is empty or invalid
+          if (!extractValue.value || parseFloat(extractValue.value) <= 0) {
+            extractValue.value = '1'
+          }
+        } else {
+          valueLabel.textContent = 'Images Per Segment'
+          extractValue.min = '1'
+          extractValue.step = '1'
+          // Only set default if value is empty or invalid
+          if (!extractValue.value || parseInt(extractValue.value) < 1) {
+            extractValue.value = '10'
+          }
+        }
+      }
+
+      const segmentColors = [
+        { fill: 'rgba(102, 126, 234, 0.4)', border: '#667eea' },
+        { fill: 'rgba(40, 167, 69, 0.4)', border: '#28a745' },
+        { fill: 'rgba(220, 53, 69, 0.4)', border: '#dc3545' },
+        { fill: 'rgba(255, 193, 7, 0.4)', border: '#e0a800' },
+        { fill: 'rgba(23, 162, 184, 0.4)', border: '#17a2b8' },
+        { fill: 'rgba(153, 102, 255, 0.4)', border: '#9966ff' },
+      ]
+
+      function getSegmentColor(index) {
+        return segmentColors[index % segmentColors.length]
+      }
+
+      function getSegments() {
+        if (segmentMode === 'points') {
+          const segs = []
+          for (let i = 0; i < cutPoints.length - 1; i++) {
+            if (cutPoints[i + 1] > cutPoints[i]) {
+              segs.push({ start: cutPoints[i], end: cutPoints[i + 1] })
+            }
+          }
+          return segs
+        } else {
+          return explicitSegments.map(s => ({ start: s.start, end: s.end }))
+        }
+      }
+
+      function scrollByRow(dir) {
+        const row = segmentList.querySelector('.segment-row')
+        if (!row) return
+        window.scrollBy({ top: dir * (row.offsetHeight + 10) })
+      }
+
+      function addCutPoint(time) {
+        if (time === undefined || time === null) {
+          if (!videoElement || videoElement.readyState < 2) return
+          time = videoElement.currentTime
+        }
+        // Insert in sorted order
+        cutPoints.push(time)
+        cutPoints.sort((a, b) => a - b)
+        // Remove duplicates
+        cutPoints = cutPoints.filter((t, i) => i === 0 || t !== cutPoints[i - 1])
+        renderSegmentsUI()
+        renderTimeline()
+        scrollByRow(1)
+      }
+
+      function removeCutPoint(index) {
+        if (cutPoints.length <= 2) return // keep at least start and end
+        cutPoints.splice(index, 1)
+        renderSegmentsUI()
+        renderTimeline()
+        scrollByRow(-1)
+      }
+
+      function addExplicitSegment(start, end) {
+        // Default to current video time
+        if (start === undefined || start === null) {
+          start = videoElement && videoElement.readyState >= 2 ? videoElement.currentTime : 0
+        }
+        // Default to end of video if no end specified
+        if (end === undefined || end === null) {
+          if (videoElement && videoElement.readyState >= 2) {
+            end = videoElement.duration
+          } else {
+            end = 0
+          }
+        }
+        explicitSegments.push({
+          id: ++segmentIdCounter,
+          start: start,
+          end: end,
+        })
+        renderSegmentsUI()
+        renderTimeline()
+        scrollByRow(1)
+      }
+
+      function removeExplicitSegment(id) {
+        explicitSegments = explicitSegments.filter(s => s.id !== id)
+        renderSegmentsUI()
+        renderTimeline()
+        scrollByRow(-1)
+      }
+
+      // Keyboard helpers for setting segment start/end
+      function setCutPointStart() {
+        if (!videoElement || videoElement.readyState < 2) return
+        if (cutPoints.length === 0) return
+        cutPoints[0] = videoElement.currentTime
+        cutPoints.sort((a, b) => a - b)
+        renderSegmentsUI()
+        renderTimeline()
+      }
+
+      function setCutPointEnd() {
+        if (!videoElement || videoElement.readyState < 2) return
+        if (cutPoints.length === 0) return
+        cutPoints[cutPoints.length - 1] = videoElement.currentTime
+        cutPoints.sort((a, b) => a - b)
+        renderSegmentsUI()
+        renderTimeline()
+      }
+
+      function setExplicitStart() {
+        if (!videoElement || videoElement.readyState < 2) return
+        if (explicitSegments.length === 0) return
+        const seg = explicitSegments[explicitSegments.length - 1]
+        seg.start = videoElement.currentTime
+        if (seg.start > seg.end) {
+          seg.start = seg.end
+        }
+        renderSegmentsUI()
+        renderTimeline()
+      }
+
+      function setExplicitEnd() {
+        if (!videoElement || videoElement.readyState < 2) return
+        if (explicitSegments.length === 0) return
+        const seg = explicitSegments[explicitSegments.length - 1]
+        seg.end = videoElement.currentTime
+        if (seg.start > seg.end) {
+          seg.end = seg.start
+        }
+        renderSegmentsUI()
+        renderTimeline()
+      }
+
+      // Read start/end values from explicit segment input fields
+      function readExplicitSegmentsFromUI() {
+        const rows = segmentList.querySelectorAll('.segment-row[data-id]')
+        rows.forEach(row => {
+          const id = parseInt(row.dataset.id, 10)
+          const startInput = row.querySelector('.seg-start-input')
+          const endInput = row.querySelector('.seg-end-input')
+          if (startInput && endInput) {
+            const parsedStart = parseTimeInput(startInput.value)
+            const parsedEnd = parseTimeInput(endInput.value)
+            const seg = explicitSegments.find(s => s.id === id)
+            if (seg) {
+              // Keep existing value if parsing fails
+              seg.start = parsedStart !== null ? parsedStart : seg.start
+              seg.end = parsedEnd !== null ? parsedEnd : seg.end
+            }
+          }
+        })
+      }
+
+      // Read time values from cut point input fields and maintain sorted order
+      function readCutPointsFromUI() {
+        const rows = segmentList.querySelectorAll('.cutpoint-row[data-index]')
+        rows.forEach(row => {
+          const index = parseInt(row.dataset.index, 10)
+          const input = row.querySelector('.cutpoint-input')
+          if (input && index >= 0 && index < cutPoints.length) {
+            const parsed = parseTimeInput(input.value)
+            if (parsed !== null) {
+              cutPoints[index] = parsed
+            }
+          }
+        })
+        cutPoints.sort((a, b) => a - b)
+      }
+
+      // Convert explicit segments to cut points mode (preserves boundaries, removes gaps)
+      function switchToPointsMode() {
+        readExplicitSegmentsFromUI()
+        const pointsSet = new Set()
+        explicitSegments.forEach(s => {
+          pointsSet.add(s.start)
+          pointsSet.add(s.end)
+        })
+        cutPoints = [...pointsSet].sort((a, b) => a - b)
+        segmentMode = 'points'
+        // Update active state in mode toggle UI
+        document.querySelectorAll('.segment-mode-toggle label').forEach(l => l.classList.remove('active'))
+        const label = document.querySelector('.segment-mode-toggle label[data-mode="points"]')
+        label.classList.add('active')
+        label.querySelector('input').checked = true
+        renderSegmentsUI()
+        renderTimeline()
+      }
+
+      // Convert cut points to explicit segments (creates contiguous segment pairs)
+      function switchToExplicitMode() {
+        readCutPointsFromUI()
+        explicitSegments = []
+        for (let i = 0; i < cutPoints.length - 1; i++) {
+          if (cutPoints[i + 1] > cutPoints[i]) {
+            explicitSegments.push({
+              id: ++segmentIdCounter,
+              start: cutPoints[i],
+              end: cutPoints[i + 1],
+            })
+          }
+        }
+        segmentMode = 'explicit'
+        // Update active state in mode toggle UI
+        document.querySelectorAll('.segment-mode-toggle label').forEach(l => l.classList.remove('active'))
+        const label = document.querySelector('.segment-mode-toggle label[data-mode="explicit"]')
+        label.classList.add('active')
+        label.querySelector('input').checked = true
+        renderSegmentsUI()
+        renderTimeline()
+      }
+
+      function renderSegmentsUI() {
+        segmentList.innerHTML = ''
+
+        if (segmentMode === 'points') {
+          if (cutPoints.length === 0) {
+            const msg = document.createElement('div')
+            msg.className = 'empty-segments-msg'
+            msg.textContent = 'No cut points defined. Load a video and add cut points.'
+            segmentList.appendChild(msg)
+            return
+          }
+
+          cutPoints.forEach((time, index) => {
+            const row = document.createElement('div')
+            row.className = 'segment-row'
+            row.dataset.index = index
+            row.classList.add('cutpoint-row')
+
+            const label = document.createElement('span')
+            label.className = 'segment-label'
+            if (index === 0) {
+              label.textContent = 'Start'
+            } else if (index === cutPoints.length - 1) {
+              label.textContent = 'End'
+            } else {
+              label.textContent = `Point ${index}`
+            }
+            row.appendChild(label)
+
+            const inputGroup = document.createElement('div')
+            inputGroup.className = 'segment-time-group'
+            const input = document.createElement('input')
+            input.type = 'text'
+            input.className = 'cutpoint-input'
+            input.value = formatTime(time)
+            input.placeholder = 'mm:ss or 0'
+            input.addEventListener('input', () => {
+              readCutPointsFromUI()
+              renderTimeline()
+            })
+            inputGroup.appendChild(input)
+
+            const setBtn = document.createElement('button')
+            setBtn.type = 'button'
+            setBtn.className = 'segment-set-btn'
+            setBtn.title = 'Set from current video time'
+            setBtn.textContent = '📍'
+            setBtn.addEventListener('click', () => {
+              if (videoElement && videoElement.readyState >= 2) {
+                input.value = formatTime(videoElement.currentTime)
+                readCutPointsFromUI()
+                renderTimeline()
+              }
+            })
+            inputGroup.appendChild(setBtn)
+            row.appendChild(inputGroup)
+
+            // Don't allow removing first or last point (keep start/end)
+            if (cutPoints.length > 2 && index > 0 && index < cutPoints.length - 1) {
+              const removeBtn = document.createElement('button')
+              removeBtn.type = 'button'
+              removeBtn.className = 'segment-remove-btn'
+              removeBtn.innerHTML = '×'
+              removeBtn.title = 'Remove this cut point'
+              removeBtn.addEventListener('click', () => {
+                removeCutPoint(index)
+              })
+              row.appendChild(removeBtn)
+            }
+
+            segmentList.appendChild(row)
+          })
+        } else {
+          // Explicit mode
+          if (explicitSegments.length === 0) {
+            const msg = document.createElement('div')
+            msg.className = 'empty-segments-msg'
+            msg.textContent = 'No segments defined. Click "+ Add" to add a segment.'
+            segmentList.appendChild(msg)
+            return
+          }
+
+          explicitSegments.forEach((seg, index) => {
+            const row = document.createElement('div')
+            row.className = 'segment-row'
+            row.dataset.id = seg.id
+
+            const label = document.createElement('span')
+            label.className = 'segment-label'
+            label.textContent = `Seg ${index + 1}`
+            row.appendChild(label)
+
+            // Start input
+            const startGroup = document.createElement('div')
+            startGroup.className = 'segment-time-group'
+            const startLabel = document.createElement('label')
+            startLabel.textContent = 'Start'
+            startGroup.appendChild(startLabel)
+            const startInput = document.createElement('input')
+            startInput.type = 'text'
+            startInput.className = 'seg-start-input'
+            startInput.value = formatTime(seg.start)
+            startInput.placeholder = 'mm:ss or 0'
+            startInput.addEventListener('input', () => {
+              readExplicitSegmentsFromUI()
+              renderTimeline()
+            })
+            startGroup.appendChild(startInput)
+            const startSetBtn = document.createElement('button')
+            startSetBtn.type = 'button'
+            startSetBtn.className = 'segment-set-btn'
+            startSetBtn.title = 'Set from current video time'
+            startSetBtn.textContent = '📍'
+            startSetBtn.addEventListener('click', () => {
+              if (videoElement && videoElement.readyState >= 2) {
+                startInput.value = formatTime(videoElement.currentTime)
+                readExplicitSegmentsFromUI()
+                renderTimeline()
+              }
+            })
+            startGroup.appendChild(startSetBtn)
+            row.appendChild(startGroup)
+
+            // End input
+            const endGroup = document.createElement('div')
+            endGroup.className = 'segment-time-group'
+            const endLabel = document.createElement('label')
+            endLabel.textContent = 'End'
+            endGroup.appendChild(endLabel)
+            const endInput = document.createElement('input')
+            endInput.type = 'text'
+            endInput.className = 'seg-end-input'
+            endInput.value = formatTime(seg.end)
+            endInput.placeholder = 'mm:ss or 0'
+            endInput.addEventListener('input', () => {
+              readExplicitSegmentsFromUI()
+              renderTimeline()
+            })
+            endGroup.appendChild(endInput)
+            const endSetBtn = document.createElement('button')
+            endSetBtn.type = 'button'
+            endSetBtn.className = 'segment-set-btn'
+            endSetBtn.title = 'Set from current video time'
+            endSetBtn.textContent = '📍'
+            endSetBtn.addEventListener('click', () => {
+              if (videoElement && videoElement.readyState >= 2) {
+                endInput.value = formatTime(videoElement.currentTime)
+                readExplicitSegmentsFromUI()
+                renderTimeline()
+              }
+            })
+            endGroup.appendChild(endSetBtn)
+            row.appendChild(endGroup)
+
+            const removeBtn = document.createElement('button')
+            removeBtn.type = 'button'
+            removeBtn.className = 'segment-remove-btn'
+            removeBtn.innerHTML = '×'
+            removeBtn.title = 'Remove this segment'
+            removeBtn.addEventListener('click', () => {
+              removeExplicitSegment(seg.id)
+            })
+            row.appendChild(removeBtn)
+
+            segmentList.appendChild(row)
+          })
+        }
+      }
+
+      // Update timeline playhead position based on current video time
+      function updateTimelinePlayhead() {
+        if (!videoElement || videoElement.duration <= 0) return
+        const view = getViewRange()
+        const pct = ((videoElement.currentTime - view.start) / (view.end - view.start)) * 100
+        timelinePlayhead.style.left = pct + '%'
+        timelinePlayhead.style.display = 'block'
+        renderSceneChart()
+      }
+
+      // Analyze scene changes by computing pixel delta between sampled frames
+      function getAnalysisInterval(duration) {
+        // Target ~1000 samples total, clamped to [0.2, 1] seconds
+        const target = duration / 1000
+        if (target <= 0.2) return 0.2
+        if (target >= 1) return 1
+        return target
+      }
+
+      function percentile(values, p) {
+        if (values.length === 0) return 0
+        const sorted = [...values].sort((a, b) => a - b)
+        const index = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * p)))
+        return sorted[index]
+      }
+
+      function detectCameraSwitchTimes(samples, duration, interval) {
+        const deltas = samples.map(s => s.delta).filter(delta => delta > 0)
+        if (deltas.length < 3) return []
+
+        const median = percentile(deltas, 0.5)
+        const q1 = percentile(deltas, 0.25)
+        const q3 = percentile(deltas, 0.75)
+        const q90 = percentile(deltas, 0.9)
+        const deviations = deltas.map(delta => Math.abs(delta - median))
+        const mad = percentile(deviations, 0.5)
+
+        // Camera switches are sharp peaks in frame-to-frame visual change.
+        // The threshold combines robust statistics with a small content floor
+        // so normal motion does not create too many false switch points.
+        const iqr = q3 - q1
+        const threshold = Math.max(12, q90, median + mad * 6, q3 + iqr * 1.5)
+        const minGapSeconds = Math.max(1, interval * 2)
+        const edgeGapSeconds = Math.max(0.2, interval * 0.5)
+
+        const candidates = []
+        for (let i = 1; i < samples.length - 1; i++) {
+          const prev = samples[i - 1].delta
+          const cur = samples[i].delta
+          const next = samples[i + 1].delta
+          const time = samples[i].time
+          if (time <= edgeGapSeconds || time >= duration - edgeGapSeconds) continue
+          if (cur < threshold) continue
+          if (cur < prev || cur < next) continue
+          candidates.push({ time, delta: cur })
+        }
+
+        candidates.sort((a, b) => b.delta - a.delta)
+        const selected = []
+        for (const candidate of candidates) {
+          if (selected.some(item => Math.abs(item.time - candidate.time) < minGapSeconds)) continue
+          selected.push(candidate)
+        }
+
+        return selected.map(item => item.time).sort((a, b) => a - b)
+      }
+
+      function mergeCameraSwitchCutPoints(switchTimes, duration) {
+        if (switchTimes.length === 0) return 0
+
+        if (segmentMode === 'explicit') {
+          switchToPointsMode()
+        } else {
+          readCutPointsFromUI()
+        }
+
+        const tolerance = 0.05
+        const merged = [0, duration, ...cutPoints]
+        let added = 0
+        for (const time of switchTimes) {
+          const clamped = Math.min(Math.max(time, 0), duration)
+          if (clamped <= 0 || clamped >= duration) continue
+          if (merged.some(existing => Math.abs(existing - clamped) <= tolerance)) continue
+          merged.push(clamped)
+          added++
+        }
+
+        cutPoints = merged
+          .filter(time => Number.isFinite(time) && time >= 0 && time <= duration)
+          .sort((a, b) => a - b)
+          .filter((time, index, points) => index === 0 || Math.abs(time - points[index - 1]) > tolerance)
+
+        renderSegmentsUI()
+        renderTimeline()
+        return added
+      }
+
+      async function analyzeSceneChanges() {
+        if (!videoElement || videoElement.readyState < 2 || videoElement.duration <= 0) return
+        if (isAnalyzing) return
+        isAnalyzing = true
+        sceneDeltas = []
+        sceneChartCanvas.width = sceneChartCanvas.width
+
+        // Pause video during analysis to avoid decoder contention
+        const wasPlaying = !videoElement.paused
+        const savedTime = videoElement.currentTime
+        videoElement.pause()
+
+        const duration = videoElement.duration
+        const interval = getAnalysisInterval(duration)
+        const samples = []
+        const offscreen = document.createElement('canvas')
+        const w = 80
+        const vw = videoElement.videoWidth
+        const vh = videoElement.videoHeight
+        const h = vw > 0 && vh > 0 ? Math.round(w / (vw / vh)) : 45
+        offscreen.width = w
+        offscreen.height = h
+        const ctx = offscreen.getContext('2d')
+        let prevData = null
+
+        analyzeScenesBtn.classList.add('hidden')
+        sceneChartLoading.classList.remove('hidden')
+
+        try {
+          // Sample the video at regular intervals
+          let lastTime = 0
+          let lastProgressRender = performance.now()
+          let progressRendered = false
+          for (let t = 0; t < duration; t += interval) {
+            // Yield to let UI update
+            if (t - lastTime >= 10) {
+              await new Promise(r => setTimeout(r, 0))
+              lastTime = t
+            }
+
+            if (shouldStopAnalysis) break
+
+            // Only wait for seeked if actually seeking to a different time
+            if (videoElement.currentTime !== t) {
+              await new Promise(resolve => {
+                videoElement.addEventListener('seeked', resolve, { once: true })
+                videoElement.currentTime = t
+              })
+            }
+            // Sync with paint cycle to ensure frame is decoded
+            await new Promise(r => requestAnimationFrame(r))
+
+            ctx.drawImage(videoElement, 0, 0, w, h)
+            const imageData = ctx.getImageData(0, 0, w, h)
+            const pixels = imageData.data
+
+            if (prevData) {
+              // Compute sum of absolute differences per pixel (average across RGB)
+              let totalDiff = 0
+              for (let i = 0; i < pixels.length; i += 4) {
+                const dr = Math.abs(pixels[i] - prevData[i])
+                const dg = Math.abs(pixels[i + 1] - prevData[i + 1])
+                const db = Math.abs(pixels[i + 2] - prevData[i + 2])
+                totalDiff += (dr + dg + db) / 3
+              }
+              const avgDiff = totalDiff / (w * h)
+              samples.push({ time: t, delta: avgDiff })
+            } else {
+              samples.push({ time: t, delta: 0 })
+            }
+
+            prevData = new Uint8Array(pixels)
+
+            // Progressive render every 2s during long analysis
+            if (samples.length >= 2) {
+              const now = performance.now()
+              if (now - lastProgressRender >= 2000) {
+                let curMax = 0
+                for (const s of samples) if (s.delta > curMax) curMax = s.delta
+                sceneDeltas = samples.map(s => ({
+                  time: s.time,
+                  delta: curMax > 0 ? s.delta / curMax : 0,
+                }))
+                if (!progressRendered) {
+                  progressRendered = true
+                  resetChartView()
+                  sceneChartSection.classList.remove('hidden')
+                }
+                renderSceneChart()
+                lastProgressRender = now
+              }
+            }
+          }
+
+          // Restore video position (don't seek to 0 — keep user's place)
+          videoElement.currentTime = savedTime
+
+          // Normalize deltas to 0-1 relative to max
+          let maxDelta = 0
+          for (const s of samples) {
+            if (s.delta > maxDelta) maxDelta = s.delta
+          }
+          sceneDeltas = samples.map(s => ({
+            time: s.time,
+            delta: maxDelta > 0 ? s.delta / maxDelta : 0,
+          }))
+          const switchTimes = detectCameraSwitchTimes(samples, duration, interval)
+          const addedSwitches = mergeCameraSwitchCutPoints(switchTimes, duration)
+          if (switchTimes.length > 0) {
+            console.info(`Detected ${switchTimes.length} camera switch(es); added ${addedSwitches} new cut point(s).`)
+          } else {
+            console.info('No camera switches detected.')
+          }
+          resetChartView()
+        } catch (e) {
+          console.warn('Scene analysis failed:', e)
+          videoElement.currentTime = savedTime
+        }
+
+        sceneChartLoading.classList.add('hidden')
+        analyzeScenesBtn.disabled = false
+        analyzeScenesBtn.textContent = '📊 Detect Camera Switches'
+        if (sceneDeltas.length > 0) {
+          renderTimeline()
+        } else {
+          analyzeScenesBtn.classList.remove('hidden')
+        }
+        shouldStopAnalysis = false
+        isAnalyzing = false
+        // Resume playback if it was playing before analysis
+        if (wasPlaying) videoElement.play()
+      }
+
+      function getViewRange() {
+        const duration = videoElement ? videoElement.duration : 0
+        if (chartView.end > 0 && duration > 0) {
+          return { start: chartView.start, end: chartView.end }
+        }
+        return { start: 0, end: duration }
+      }
+
+      function renderSceneChart() {
+        if (sceneDeltas.length === 0) return
+        if (sceneChartSection.classList.contains('hidden')) return
+        const canvas = sceneChartCanvas
+        const rect = canvas.parentElement.getBoundingClientRect()
+        const w = rect.width
+        const h = canvas.height
+        canvas.width = w * devicePixelRatio
+        canvas.height = h * devicePixelRatio
+        const ctx = canvas.getContext('2d')
+        ctx.scale(devicePixelRatio, devicePixelRatio)
+
+        // Clear
+        ctx.clearRect(0, 0, w, h)
+
+        const padding = 2
+        const chartTop = padding
+        const chartBottom = h - padding
+        const chartHeight = chartBottom - chartTop
+
+        if (sceneDeltas.length < 2) return
+
+        const view = getViewRange()
+        const viewDuration = view.end - view.start
+        if (viewDuration <= 0) return
+        const xScale = w / viewDuration
+
+        // Draw filled area (only visible samples)
+        ctx.beginPath()
+        ctx.moveTo(0, chartBottom)
+        for (const s of sceneDeltas) {
+          if (s.time < view.start) continue
+          if (s.time > view.end) break
+          const x = (s.time - view.start) * xScale
+          const y = chartBottom - s.delta * chartHeight
+          ctx.lineTo(x, y)
+        }
+        ctx.lineTo(w, chartBottom)
+        ctx.closePath()
+        ctx.fillStyle = 'rgba(102, 126, 234, 0.15)'
+        ctx.fill()
+
+        // Draw line
+        ctx.beginPath()
+        let first = true
+        for (const s of sceneDeltas) {
+          if (s.time < view.start) continue
+          if (s.time > view.end) break
+          const x = (s.time - view.start) * xScale
+          const y = chartBottom - s.delta * chartHeight
+          if (first) { ctx.moveTo(x, y); first = false }
+          else ctx.lineTo(x, y)
+        }
+        ctx.strokeStyle = '#667eea'
+        ctx.lineWidth = 1
+        ctx.stroke()
+
+        // Draw segment boundaries as vertical lines
+        const segs = getSegments()
+        for (const seg of segs) {
+          if (seg.end < view.start || seg.start > view.end) continue
+          const x1 = Math.max(0, (Math.max(seg.start, view.start) - view.start) * xScale)
+          const x2 = Math.min(w, (Math.min(seg.end, view.end) - view.start) * xScale)
+          ctx.strokeStyle = 'rgba(0,0,0,0.3)'
+          ctx.lineWidth = 1
+          ctx.setLineDash([3, 3])
+          ctx.beginPath()
+          ctx.moveTo(x1, chartTop)
+          ctx.lineTo(x1, chartBottom)
+          ctx.stroke()
+          ctx.beginPath()
+          ctx.moveTo(x2, chartTop)
+          ctx.lineTo(x2, chartBottom)
+          ctx.stroke()
+          ctx.setLineDash([])
+        }
+
+        // Draw playhead
+        if (videoElement && videoElement.duration > 0) {
+          const playheadX = (videoElement.currentTime - view.start) * xScale
+          if (playheadX >= 0 && playheadX <= w) {
+            ctx.strokeStyle = '#ff4444'
+            ctx.lineWidth = 2
+            ctx.setLineDash([])
+            ctx.beginPath()
+            ctx.moveTo(playheadX, chartTop)
+            ctx.lineTo(playheadX, chartBottom)
+            ctx.stroke()
+          }
+        }
+      }
+
+      function resetChartView() {
+        const duration = videoElement ? videoElement.duration : 0
+        if (duration > 0) {
+          chartView = { start: 0, end: duration }
+        } else {
+          chartView = { start: 0, end: 0 }
+        }
+      }
+
+      // Render colored segment blocks on the timeline bar
+      function renderTimeline() {
+        // Hide timeline if video is not loaded
+        if (!videoElement || videoElement.readyState < 1) {
+          timelineSection.classList.add('hidden')
+          sceneChartSection.classList.add('hidden')
+          timelinePlayhead.style.display = 'none'
+          return
+        }
+
+        const duration = videoElement.duration
+        if (duration <= 0) {
+          timelineSection.classList.add('hidden')
+          sceneChartSection.classList.add('hidden')
+          timelinePlayhead.style.display = 'none'
+          return
+        }
+
+        const segs = getSegments()
+        if (segs.length === 0) {
+          timelineSection.classList.add('hidden')
+          sceneChartSection.classList.add('hidden')
+          timelinePlayhead.style.display = 'none'
+          return
+        }
+
+        timelineSection.classList.remove('hidden')
+        sceneChartSection.classList.remove('hidden')
+        timelinePlayhead.style.display = 'block'
+        timelineSegments.innerHTML = ''
+
+        const view = getViewRange()
+        const viewDuration = view.end - view.start
+
+        timelineStartLabel.textContent = formatTime(view.start)
+        timelineEndLabel.textContent = formatTime(view.end)
+
+        segs.forEach((seg, index) => {
+          const segStart = Math.max(seg.start, view.start)
+          const segEnd = Math.min(seg.end, view.end)
+          if (segEnd <= segStart) return
+
+          const leftPercent = ((segStart - view.start) / viewDuration) * 100
+          const widthPercent = ((segEnd - segStart) / viewDuration) * 100
+          const color = getSegmentColor(index)
+
+          const el = document.createElement('div')
+          el.className = 'timeline-segment'
+          el.style.left = leftPercent + '%'
+          el.style.width = widthPercent + '%'
+          el.style.background = color.fill
+          el.style.borderColor = color.border
+
+          el.title = `Segment ${index + 1}: ${formatTime(seg.start)} - ${formatTime(seg.end)}`
+
+          const label = document.createElement('span')
+          label.className = 'timeline-segment-label'
+          label.textContent = index + 1
+          el.appendChild(label)
+
+          el.addEventListener('click', e => {
+            e.stopPropagation()
+            if (videoElement) {
+              videoElement.currentTime = seg.start
+              videoElement.play()
+              const handler = () => {
+                if (videoElement.currentTime >= seg.end) {
+                  videoElement.pause()
+                  videoElement.removeEventListener('timeupdate', handler)
+                }
+              }
+              videoElement.addEventListener('timeupdate', handler)
+            }
+          })
+
+          timelineSegments.appendChild(el)
+        })
+
+        renderSceneChart()
+      }
+
+      // Initialize with a single default segment covering the full video
+      function initSegmentsForVideo() {
+        const duration = videoElement.duration
+        // Set cut points from start to end
+        cutPoints = [0, duration]
+        // Set explicit segment covering full duration
+        explicitSegments = [{
+          id: ++segmentIdCounter,
+          start: 0,
+          end: duration,
+        }]
+        renderSegmentsUI()
+        renderTimeline()
+      }
+
+      // Export segments as a downloadable JSON file
+      function exportSegments() {
+        readCutPointsFromUI()
+        readExplicitSegmentsFromUI()
+        const data = {
+          version: 1,
+          segmentMode: segmentMode,
+        }
+        if (segmentMode === 'points') {
+          data.cutPoints = cutPoints
+          data.explicitSegments = []
+        } else {
+          data.cutPoints = []
+          data.explicitSegments = explicitSegments.map(s => ({ start: s.start, end: s.end }))
+        }
+        const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' })
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = videoFileName ? `${videoFileName}_segments.json` : 'segments.json'
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        URL.revokeObjectURL(url)
+      }
+
+      // Import segments from a JSON file
+      function importSegments(file) {
+        const reader = new FileReader()
+        reader.onload = e => {
+          try {
+            const data = JSON.parse(e.target.result)
+            if (!data.version || !data.segmentMode) {
+              showError('Invalid segment file format')
+              return
+            }
+            segmentMode = data.segmentMode
+            cutPoints = data.cutPoints || []
+            explicitSegments = (data.explicitSegments || []).map(s => ({
+              id: ++segmentIdCounter,
+              start: s.start,
+              end: s.end,
+            }))
+            // Sync mode toggle UI
+            document.querySelectorAll('.segment-mode-toggle label').forEach(l => l.classList.remove('active'))
+            const label = document.querySelector(`.segment-mode-toggle label[data-mode="${segmentMode}"]`)
+            if (label) {
+              label.classList.add('active')
+              label.querySelector('input').checked = true
+            }
+            renderSegmentsUI()
+            renderTimeline()
+          } catch (err) {
+            showError('Error importing segments: ' + err.message)
+          }
+        }
+        reader.readAsText(file)
+      }
+
+      function setupVideoUI() {
+        // Reset scene chart for new video
+        sceneDeltas = []
+        isAnalyzing = false
+        shouldStopAnalysis = false
+        chartView = { start: 0, end: 0 }
+        sceneChartLoading.classList.add('hidden')
+        analyzeScenesBtn.disabled = false
+        analyzeScenesBtn.textContent = '📊 Detect Camera Switches'
+        analyzeScenesBtn.classList.remove('hidden')
+        sceneChartCanvas.width = sceneChartCanvas.width
+
+        videoPreview.classList.remove('hidden')
+        snapshotSection.classList.remove('hidden')
+        controls.classList.remove('hidden')
+        document.querySelector('.control-buttons')?.classList.remove('hidden')
+        extractBtn.disabled = false
+        errorDiv.classList.add('hidden')
+
+        // Update label to match current mode (handles Firefox stored values)
+        updateValueLabel()
+
+        // Initialize segments when video metadata loads
+        video.addEventListener(
+          'loadedmetadata',
+          () => {
+            initSegmentsForVideo()
+          },
+          { once: true },
+        )
+
+        // Update timeline playhead on playback
+        video.removeEventListener('timeupdate', updateTimelinePlayhead)
+        video.addEventListener('timeupdate', updateTimelinePlayhead)
+
+        // Reset previous extraction
+        extractedFrames = []
+        updateFrameCount()
+        previewSection.classList.add('hidden')
+        downloadBtn.disabled = true
+      }
+
+      function handleVideoFile(file) {
+        videoFile = file
+        // Store original filename without extension
+        const fileName = file.name
+        const lastDot = fileName.lastIndexOf('.')
+        videoFileName = lastDot > 0 ? fileName.substring(0, lastDot) : fileName
+        // Sanitize filename (remove special characters, keep only alphanumeric, dash, underscore)
+        videoFileName = videoFileName.replace(/[/\\?%*:|"<>]/g, '_')
+
+        const url = URL.createObjectURL(file)
+        video.src = url
+        videoElement = video
+        setupVideoUI()
+      }
+
+      async function triggerCapture() {
+        if (!videoElement || videoElement.readyState < 2) {
+          showError('Please wait for the video to load')
+          return
+        }
+
+        try {
+          await captureCurrentFrame()
+        } catch (error) {
+          showError('Error capturing frame: ' + error.message)
+        }
+      }
+
+      snapshotBtn.addEventListener('click', triggerCapture)
+
+      // Keyboard shortcuts: C=capture, A=add segment/point, S=set start, E=set end
+      // Note: Left/Right arrows and Spacebar work by default for video controls
+      document.addEventListener('keydown', async e => {
+        if (e.ctrlKey || e.metaKey || e.altKey) return
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
+
+        // Capture current frame
+        if (
+          (e.key === 'c' || e.key === 'C') &&
+          !snapshotSection.classList.contains('hidden')
+        ) {
+          e.preventDefault()
+          await triggerCapture()
+          return
+        }
+
+        // Segment shortcuts (only when controls section is visible)
+        if (!controls.classList.contains('hidden')) {
+          if (segmentMode === 'points') {
+            if (e.key === 'a' || e.key === 'A') {
+              e.preventDefault()
+              addCutPoint()
+              return
+            }
+            if (e.key === 's' || e.key === 'S') {
+              e.preventDefault()
+              setCutPointStart()
+              return
+            }
+            if (e.key === 'e' || e.key === 'E') {
+              e.preventDefault()
+              setCutPointEnd()
+              return
+            }
+          }
+          if (segmentMode === 'explicit') {
+            if (e.key === 'a' || e.key === 'A') {
+              e.preventDefault()
+              addExplicitSegment()
+              return
+            }
+            if (e.key === 's' || e.key === 'S') {
+              e.preventDefault()
+              setExplicitStart()
+              return
+            }
+            if (e.key === 'e' || e.key === 'E') {
+              e.preventDefault()
+              setExplicitEnd()
+              return
+            }
+          }
+        }
+
+        // Don't prevent default for ArrowLeft, ArrowRight, or Space - let browser handle them
+      })
+
+      function createPreviewItem(frame, frameIndex) {
+        const img = document.createElement('img')
+        img.src = URL.createObjectURL(frame.blob)
+        img.alt = `Frame ${frameIndex}`
+
+        const previewItem = document.createElement('div')
+        previewItem.className = 'preview-item'
+        previewItem.dataset.frameId = frame.id
+        previewItem.dataset.frameIndex = frameIndex
+        previewItem.appendChild(img)
+
+        // Delete button
+        const deleteBtn = document.createElement('button')
+        deleteBtn.className = 'delete-btn'
+        deleteBtn.type = 'button' // Prevent form submission
+        deleteBtn.innerHTML = '×'
+        deleteBtn.title = 'Remove this frame'
+        deleteBtn.addEventListener('click', e => {
+          e.preventDefault()
+          e.stopPropagation()
+          removeFrame(frame.id)
+        })
+        previewItem.appendChild(deleteBtn)
+
+        // Frame number label
+        const frameNumber = document.createElement('div')
+        frameNumber.className = 'frame-number'
+        const manualLabel = frame.isManual ? ' - Manual' : ''
+        const segIndexDisplay = frame.segmentIndex !== undefined ? frame.segmentIndex + 1 : null
+        const segLabel = segIndexDisplay ? ` Seg${segIndexDisplay}` : ''
+        const timeStr = formatTime(frame.time)
+        const timeSpan = document.createElement('span')
+        timeSpan.textContent = timeStr
+        frameNumber.appendChild(document.createTextNode(`Frame ${frameIndex} (`))
+        frameNumber.appendChild(timeSpan)
+        frameNumber.appendChild(document.createTextNode(`)${segLabel}${manualLabel}`))
+        frameNumber.title = 'Click to copy timestamp'
+        frameNumber.addEventListener('click', () => {
+          navigator.clipboard.writeText(timeStr).catch(() => {})
+          const range = document.createRange()
+          range.selectNodeContents(timeSpan)
+          window.getSelection().removeAllRanges()
+          window.getSelection().addRange(range)
+          timeSpan.style.transition = 'background 0.2s'
+          timeSpan.style.background = 'rgba(102, 126, 234, 0.8)'
+          setTimeout(() => { timeSpan.style.background = '' }, 300)
+        })
+        previewItem.appendChild(frameNumber)
+
+        return previewItem
+      }
+
+      function updateFrameCount() {
+        frameCount.textContent = extractedFrames.length
+        // Show/hide remove all button based on frame count
+        if (extractedFrames.length > 0) {
+          removeAllBtn.classList.remove('hidden')
+          removeAllBtn.disabled = false
+        } else {
+          removeAllBtn.classList.add('hidden')
+          removeAllBtn.disabled = true
+        }
+      }
+
+      function removeFrame(frameId) {
+        // Remove from DOM first to revoke object URL
+        const previewItem = previewGrid.querySelector(
+          `[data-frame-id="${frameId}"]`,
+        )
+        if (previewItem) {
+          const img = previewItem.querySelector('img')
+          if (img && img.src) {
+            URL.revokeObjectURL(img.src)
+          }
+          // Smooth removal with fade out
+          previewItem.style.transition = 'opacity 0.1s, transform 0.1s'
+          previewItem.style.opacity = '0'
+          previewItem.style.transform = 'scale(0.9)'
+          setTimeout(() => {
+            previewItem.remove()
+          }, 100)
+        }
+
+        // Remove from array using unique ID
+        extractedFrames = extractedFrames.filter(f => f.id !== frameId)
+
+        // Update indices of remaining frames without full rebuild
+        updateFrameIndices()
+        updateFrameCount()
+
+        // Disable download if no frames left
+        if (extractedFrames.length === 0) {
+          downloadBtn.disabled = true
+          previewSection.classList.add('hidden')
+        }
+      }
+
+      function updateFrameIndices() {
+        // Update indices in array and DOM without full rebuild
+        // Since frames are displayed newest first, we need to update in reverse order
+        const reversedFrames = [...extractedFrames].reverse()
+        reversedFrames.forEach((frame, idx) => {
+          const newIndex = extractedFrames.length - idx
+          const oldIndex = frame.index
+          frame.index = newIndex
+
+          // Update DOM element if it exists using unique ID
+          const previewItem = previewGrid.querySelector(
+            `[data-frame-id="${frame.id}"]`,
+          )
+          if (previewItem) {
+            previewItem.dataset.frameIndex = newIndex
+            const frameNumber = previewItem.querySelector('.frame-number')
+            if (frameNumber) {
+              const manualLabel = frame.isManual ? ' - Manual' : ''
+              const segIndexDisplay2 = frame.segmentIndex !== undefined ? frame.segmentIndex + 1 : null
+              const segLabel2 = segIndexDisplay2 ? ` Seg${segIndexDisplay2}` : ''
+              frameNumber.textContent = `Frame ${newIndex} (${formatTime(frame.time)})${segLabel2}${manualLabel}`
+            }
+          }
+        })
+      }
+
+      function rebuildPreviewGrid() {
+        // Clear and rebuild preview grid with updated indices (newest first)
+        previewGrid.innerHTML = ''
+        // Reverse array to show newest first
+        const reversedFrames = [...extractedFrames].reverse()
+        reversedFrames.forEach((frame, idx) => {
+          const newIndex = extractedFrames.length - idx
+          frame.index = newIndex
+          const previewItem = createPreviewItem(frame, newIndex)
+          previewGrid.appendChild(previewItem)
+        })
+      }
+
+      async function captureCurrentFrame() {
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+
+        canvas.width = videoElement.videoWidth
+        canvas.height = videoElement.videoHeight
+
+        // Draw current frame to canvas
+        ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height)
+
+        // Convert to blob
+        const blob = await new Promise(resolve => {
+          canvas.toBlob(resolve, 'image/jpeg', 0.9)
+        })
+
+        const currentTime = videoElement.currentTime
+        const frameIndex = extractedFrames.length + 1
+
+        const frame = {
+          id: ++frameIdCounter,
+          blob: blob,
+          time: currentTime,
+          index: frameIndex,
+          isManual: true,
+        }
+
+        extractedFrames.push(frame)
+
+        // Show preview (newest first)
+        const previewItem = createPreviewItem(frame, frameIndex)
+        previewGrid.insertBefore(previewItem, previewGrid.firstChild)
+
+        // Update frame count
+        updateFrameCount()
+
+        // Show preview section and enable download
+        previewSection.classList.remove('hidden')
+        downloadBtn.disabled = false
+      }
+
+      function showError(message) {
+        errorDiv.textContent = message
+        errorDiv.classList.remove('hidden')
+      }
+
+      extractBtn.addEventListener('click', async () => {
+        if (!videoFile || !videoElement) {
+          showError('Please select a video file first')
+          return
+        }
+
+        extractBtn.disabled = true
+        stopBtn.classList.remove('hidden')
+        stopBtn.disabled = false
+        stopBtn.textContent = '⏹ Stop Extraction'
+        progress.classList.add('active')
+        errorDiv.classList.add('hidden')
+        shouldStopExtraction = false
+
+        // Preserve manually captured frames
+        const manualFrames = extractedFrames.filter(f => f.isManual)
+        const manualCount = manualFrames.length
+
+        // Clear preview grid but keep manual frames
+        previewGrid.innerHTML = ''
+
+        // Re-add manual frames to preview (newest first)
+        const reversedManualFrames = [...manualFrames].reverse()
+        for (let i = 0; i < reversedManualFrames.length; i++) {
+          const frame = reversedManualFrames[i]
+          const previewItem = createPreviewItem(frame, frame.index)
+          previewGrid.appendChild(previewItem)
+        }
+
+        // Clear automatic frames but keep manual ones
+        extractedFrames = manualFrames
+
+        const mode = extractMode.value
+        const value = parseFloat(extractValue.value)
+
+        if (mode === 'interval' && value <= 0) {
+          showError('Interval must be greater than 0')
+          extractBtn.disabled = false
+          stopBtn.classList.add('hidden')
+          progress.classList.remove('active')
+          return
+        }
+
+        if (mode === 'count' && value < 1) {
+          showError('Total count must be at least 1')
+          extractBtn.disabled = false
+          stopBtn.classList.add('hidden')
+          progress.classList.remove('active')
+          return
+        }
+
+        // Read current segment data from UI
+        readCutPointsFromUI()
+        readExplicitSegmentsFromUI()
+        const segs = getSegments()
+
+        if (segs.length === 0) {
+          showError('No segments defined. Add at least one segment.')
+          extractBtn.disabled = false
+          stopBtn.classList.add('hidden')
+          progress.classList.remove('active')
+          return
+        }
+
+        // Validate segments
+        for (const seg of segs) {
+          if (seg.start < 0) {
+            showError('Start time cannot be negative')
+            extractBtn.disabled = false
+            stopBtn.classList.add('hidden')
+            progress.classList.remove('active')
+            return
+          }
+          if (seg.end <= seg.start) {
+            showError('End time must be greater than start time in each segment')
+            extractBtn.disabled = false
+            stopBtn.classList.add('hidden')
+            progress.classList.remove('active')
+            return
+          }
+        }
+
+        try {
+          await extractFrames(mode, value, segs)
+        } catch (error) {
+          showError('Error extracting frames: ' + error.message)
+          extractBtn.disabled = false
+          stopBtn.classList.add('hidden')
+          progress.classList.remove('active')
+          shouldStopExtraction = false
+        }
+      })
+
+      stopBtn.addEventListener('click', () => {
+        shouldStopExtraction = true
+        stopBtn.disabled = true
+        stopBtn.textContent = '⏹ Stopping...'
+      })
+
+      async function extractFrames(mode, value, segments) {
+        const canvas = document.createElement('canvas')
+        const ctx = canvas.getContext('2d')
+
+        // Wait for video metadata to load
+        await new Promise(resolve => {
+          if (videoElement.readyState >= 2) {
+            resolve()
+          } else {
+            videoElement.addEventListener('loadedmetadata', resolve, {
+              once: true,
+            })
+          }
+        })
+
+        const duration = videoElement.duration
+        canvas.width = videoElement.videoWidth
+        canvas.height = videoElement.videoHeight
+
+        // Generate frame times for all segments
+        let frameSamples = [] // { time, segmentIndex }[]
+
+        for (let segIdx = 0; segIdx < segments.length; segIdx++) {
+          const seg = segments[segIdx]
+          const segStart = Math.max(0, Math.min(seg.start, duration))
+          const segEnd = seg.end > 0 ? Math.min(seg.end, duration) : duration
+
+          if (segEnd <= segStart) continue
+
+          const rangeDuration = segEnd - segStart
+          const segTimes = []
+
+          if (mode === 'interval') {
+            // Extract by interval within the time range
+            for (let time = segStart; time < segEnd; time += value) {
+              segTimes.push(Math.min(time, segEnd))
+            }
+            // Make sure we include the end time if it's close
+            if (
+              segTimes.length === 0 ||
+              segTimes[segTimes.length - 1] < segEnd - value / 2
+            ) {
+              segTimes.push(segEnd)
+            }
+          } else {
+            // Extract by total count within the time range
+            const interval = rangeDuration / (value + 1)
+            for (let i = 1; i <= value; i++) {
+              segTimes.push(segStart + i * interval)
+            }
+          }
+
+          for (const time of segTimes) {
+            frameSamples.push({ time, segmentIndex: segIdx })
+          }
+        }
+
+        // Deduplicate boundary overlaps when segments are adjacent
+        const seen = new Set()
+        frameSamples = frameSamples.filter(s => {
+          const key = Math.round(s.time * 1000)
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+        frameSamples.sort((a, b) => a.time - b.time)
+
+        // Track per-segment frame count for 0-based per-segment frame index
+        const segFrameCounts = new Array(segments.length).fill(0)
+
+        const totalFrames = frameSamples.length
+
+        for (let i = 0; i < frameSamples.length; i++) {
+          // Check if extraction should be stopped
+          if (shouldStopExtraction) {
+            progressFill.textContent = 'Stopped'
+            break
+          }
+
+          const { time, segmentIndex } = frameSamples[i]
+
+          // Seek to frame time
+          videoElement.currentTime = time
+
+          // Wait for seek to complete
+          await new Promise(resolve => {
+            videoElement.addEventListener('seeked', resolve, { once: true })
+          })
+
+          // Check again after seek (in case stop was clicked during seek)
+          if (shouldStopExtraction) {
+            progressFill.textContent = 'Stopped'
+            break
+          }
+
+          // Draw frame to canvas
+          ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height)
+
+          // Convert to blob
+          const blob = await new Promise(resolve => {
+            canvas.toBlob(resolve, 'image/jpeg', 0.9)
+          })
+
+          const globalIndex = extractedFrames.length + 1
+          const segFrameIndex = segFrameCounts[segmentIndex] || 0
+          segFrameCounts[segmentIndex] = segFrameIndex + 1
+          const frame = {
+            id: ++frameIdCounter,
+            blob: blob,
+            time: time,
+            index: globalIndex,
+            isManual: false,
+            segmentIndex: segmentIndex,
+            segmentFrameIndex: segFrameIndex,
+          }
+          extractedFrames.push(frame)
+
+          // Update progress
+          const progressPercent = ((i + 1) / totalFrames) * 100
+          progressFill.style.width = progressPercent + '%'
+          progressFill.textContent = Math.round(progressPercent) + '%'
+
+          // Show preview
+          const previewItem = createPreviewItem(frame, globalIndex)
+          previewGrid.appendChild(previewItem)
+        }
+
+        // Update frame count
+        updateFrameCount()
+
+        progress.classList.remove('active')
+        stopBtn.classList.add('hidden')
+        previewSection.classList.remove('hidden')
+        downloadBtn.disabled = false
+        extractBtn.disabled = false
+        shouldStopExtraction = false
+      }
+
+      downloadBtn.addEventListener('click', async () => {
+        if (extractedFrames.length === 0) {
+          showError('No frames to download')
+          return
+        }
+
+        downloadBtn.disabled = true
+        downloadBtn.textContent = 'Creating ZIP...'
+
+        try {
+          const zip = new JSZip()
+
+          for (let i = 0; i < extractedFrames.length; i++) {
+            const frame = extractedFrames[i]
+            const totalSecs = frame.time
+            const hrs = Math.floor(totalSecs / 3600)
+            const mins = Math.floor((totalSecs % 3600) / 60)
+            const secs = totalSecs % 60
+            const secsInt = Math.floor(secs)
+            const ms = Math.round((secs - secsInt) * 1000)
+            const timeStr = `${String(hrs).padStart(2, '0')}.${String(mins).padStart(2, '0')}.${String(secsInt).padStart(2, '0')}.${String(ms).padStart(3, '0')}`
+            const displayIndex = frame.index
+            const segDisplayIndex = frame.segmentIndex !== undefined ? frame.segmentIndex + 1 : undefined
+            const hasSegment = segDisplayIndex !== undefined
+            const filename = videoFileName
+              ? hasSegment
+                ? `${videoFileName}_seg${segDisplayIndex}_frame${displayIndex}_${timeStr}.jpg`
+                : `${videoFileName}_frame${displayIndex}_${timeStr}.jpg`
+              : hasSegment
+                ? `frame_seg${segDisplayIndex}_f${displayIndex}_${timeStr}.jpg`
+                : `frame_${String(displayIndex).padStart(4, '0')}_${timeStr}.jpg`
+            zip.file(filename, frame.blob)
+          }
+
+          const zipBlob = await zip.generateAsync({ type: 'blob' })
+          const url = URL.createObjectURL(zipBlob)
+          const a = document.createElement('a')
+          a.href = url
+          // Use video filename with frames suffix and frame count
+          const frameCount = extractedFrames.length
+          const zipFilename = videoFileName
+            ? `${videoFileName}_frames_x${frameCount}.zip`
+            : `video_frames_x${frameCount}_${Date.now()}.zip`
+          a.download = zipFilename
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+
+          downloadBtn.textContent = 'Download as ZIP'
+          downloadBtn.disabled = false
+        } catch (error) {
+          showError('Error creating ZIP: ' + error.message)
+          downloadBtn.textContent = 'Download as ZIP'
+          downloadBtn.disabled = false
+        }
+      })
+
+      removeAllBtn.addEventListener('click', () => {
+        if (extractedFrames.length === 0) return
+
+        // Revoke all object URLs
+        previewGrid.querySelectorAll('img').forEach(img => {
+          if (img.src) {
+            URL.revokeObjectURL(img.src)
+          }
+        })
+
+        // Clear all frames
+        extractedFrames = []
+        previewGrid.innerHTML = ''
+        updateFrameCount()
+        downloadBtn.disabled = true
+        previewSection.classList.add('hidden')
+      })
+
+      // Handle segment mode toggle (Cutting Points / Explicit)
+      document.querySelectorAll('.segment-mode-toggle label').forEach(label => {
+        label.addEventListener('click', () => {
+          const mode = label.dataset.mode
+          if (mode === 'points') {
+            switchToPointsMode()
+          } else {
+            switchToExplicitMode()
+          }
+        })
+      })
+
+      // Add new segment or cut point depending on current mode
+      function handleAddSegment() {
+        if (segmentMode === 'points') {
+          addCutPoint()
+        } else {
+          addExplicitSegment()
+        }
+      }
+
+      addSegmentBottomBtn.addEventListener('click', handleAddSegment)
+
+      // Export segments to JSON file
+      exportSegmentsBtn.addEventListener('click', exportSegments)
+
+      // Import segments from JSON file
+      importSegmentsBtn.addEventListener('click', () => {
+        importFileInput.click()
+      })
+
+      importFileInput.addEventListener('change', e => {
+        if (e.target.files.length > 0) {
+          importSegments(e.target.files[0])
+          e.target.value = '' // allow re-importing the same file
+        }
+      })
+
+      // Click on timeline empty area to seek
+      timelineBarContainer.addEventListener('click', e => {
+        if (e.target.closest('.timeline-segment')) return
+        const rect = timelineBarContainer.getBoundingClientRect()
+        const pct = (e.clientX - rect.left) / rect.width
+        if (videoElement) {
+          const view = getViewRange()
+          videoElement.currentTime = view.start + pct * (view.end - view.start)
+        }
+      })
+
+      // Drag on chart to seek: mousedown seeks+pauses, drag keeps seeking, mouseup resumes if was playing
+      let chartWasPlaying = false
+      let isDraggingChart = false
+
+      sceneChartCanvas.addEventListener('mousedown', e => {
+        isDraggingChart = true
+        if (!videoElement) return
+        chartWasPlaying = !videoElement.paused
+        videoElement.pause()
+        const rect = sceneChartCanvas.getBoundingClientRect()
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+        const view = getViewRange()
+        videoElement.currentTime = view.start + pct * (view.end - view.start)
+      })
+
+      document.addEventListener('mousemove', e => {
+        if (!isDraggingChart || e.buttons !== 1) return
+        const rect = sceneChartCanvas.getBoundingClientRect()
+        const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
+        if (videoElement) {
+          const view = getViewRange()
+          videoElement.currentTime = view.start + pct * (view.end - view.start)
+        }
+      })
+
+      document.addEventListener('mouseup', e => {
+        if (!isDraggingChart) return
+        isDraggingChart = false
+        if (chartWasPlaying && videoElement) {
+          videoElement.play()
+        }
+        chartWasPlaying = false
+      })
+
+      // Wheel: zoom on chart+timeline, Shift+Wheel: horizontal pan
+      sceneChartCanvas.addEventListener('wheel', e => {
+        e.preventDefault()
+        if (!videoElement || videoElement.duration <= 0) return
+        const rect = sceneChartCanvas.getBoundingClientRect()
+        const cursorX = e.clientX - rect.left
+        const duration = videoElement.duration
+
+        if (e.shiftKey) {
+          // Horizontal pan
+          const viewDuration = chartView.end - chartView.start
+          const panAmount = (e.deltaY * viewDuration) / rect.width
+          chartView.start += panAmount
+          chartView.end += panAmount
+        } else {
+          // Zoom centered on cursor
+          const cursorTime = chartView.start + (cursorX / rect.width) * (chartView.end - chartView.start)
+          const currentWidth = chartView.end - chartView.start
+          const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25
+          const newWidth = currentWidth * factor
+          const cursorRatio = cursorX / rect.width
+          chartView.start = cursorTime - cursorRatio * newWidth
+          chartView.end = chartView.start + newWidth
+        }
+
+        // Clamp to video duration
+        if (chartView.start < 0) {
+          chartView.end -= chartView.start
+          chartView.start = 0
+        }
+        if (chartView.end > duration) {
+          chartView.start -= (chartView.end - duration)
+          chartView.end = duration
+        }
+        if (chartView.start < 0) chartView.start = 0
+
+        renderTimeline()
+      }, { passive: false })
+
+      // Double-click on chart to reset zoom
+      sceneChartCanvas.addEventListener('dblclick', e => {
+        resetChartView()
+        renderTimeline()
+      })
+
+      // Analyze scenes button — toggles between analyze and stop
+      analyzeScenesBtn.addEventListener('click', () => {
+        if (isAnalyzing) {
+          shouldStopAnalysis = true
+          analyzeScenesBtn.textContent = '⏹ Stopping...'
+          analyzeScenesBtn.disabled = true
+        } else {
+          analyzeSceneChanges()
+        }
+      })
+
+      // Re-render scene chart on window resize
+      window.addEventListener('resize', () => renderSceneChart())
+
+      // Handle Firefox restoring video file across refresh
+      if (videoInput.files.length > 0) {
+        handleVideoFile(videoInput.files[0])
+      }
+    </script>
+  </body>
+</html>
