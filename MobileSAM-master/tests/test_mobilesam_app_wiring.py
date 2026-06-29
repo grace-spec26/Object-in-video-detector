@@ -84,6 +84,15 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         self.assertIn("def get_sam2_coordinate_runtime():", app_source)
         self.assertIn('if sam2_coordinate_runtime["predictor"] is not None:', app_source)
         self.assertIn("Loading SAM2 model (first run only)", function_block)
+
+        loading_start = function_block.index('status="Loading SAM2 model (first run only)"')
+        loading_end = function_block.index("sam2_runtime = get_sam2_coordinate_runtime()", loading_start)
+        loading_block = function_block[loading_start:loading_end]
+
+        self.assertIn("format_coordinate_progress_html", loading_block)
+        self.assertIn("1,", loading_block)
+        self.assertIn("4,", loading_block)
+        self.assertNotIn("0,\n                1,", loading_block)
         self.assertIn("sam2_runtime = get_sam2_coordinate_runtime()", function_block)
         self.assertIn('predictor=sam2_runtime["predictor"]', function_block)
         self.assertIn('device=sam2_runtime["device"]', function_block)

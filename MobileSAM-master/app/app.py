@@ -591,8 +591,8 @@ def _run_coordinate_folder_batch_worker(
         set_coordinate_batch_state(
             status="Loading SAM2 model (first run only)",
             progress_html=format_coordinate_progress_html(
-                0,
                 1,
+                4,
                 "Loading SAM2 model (first run only)",
             ),
             frames_zip=None,
