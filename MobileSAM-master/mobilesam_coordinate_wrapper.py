@@ -14,10 +14,12 @@ DEFAULT_RAW_MASK_DATA_DIR = PROJECT_ROOT / "raw-mask-data"
 SUPPORTED_FRAME_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 NEGATIVE_MODE_BOX_4_CORNERS = "box_4_corners"
 NEGATIVE_MODE_BOX_8_POINTS = "box_8_points"
+NEGATIVE_MODE_ORIENTED_SIDE_POINTS = "oriented_side_points"
 NEGATIVE_MODE_NONE = "none"
 NEGATIVE_MODES = (
     NEGATIVE_MODE_BOX_4_CORNERS,
     NEGATIVE_MODE_BOX_8_POINTS,
+    NEGATIVE_MODE_ORIENTED_SIDE_POINTS,
     NEGATIVE_MODE_NONE,
 )
 DEFAULT_NEGATIVE_MODE = NEGATIVE_MODE_BOX_8_POINTS
@@ -315,6 +317,8 @@ def _negative_candidates_from_box(box: np.ndarray, negative_mode: str) -> np.nda
     ]
     if negative_mode == NEGATIVE_MODE_BOX_4_CORNERS:
         return np.asarray(corners, dtype=np.float32)
+    if negative_mode != NEGATIVE_MODE_BOX_8_POINTS:
+        raise ValueError(f"{negative_mode} requires positive points, not only a box.")
 
     center_x = (x1 + x2) / 2.0
     center_y = (y1 + y2) / 2.0
@@ -325,6 +329,77 @@ def _negative_candidates_from_box(box: np.ndarray, negative_mode: str) -> np.nda
         [x1, center_y],
     ]
     return np.asarray(corners + edge_centers, dtype=np.float32)
+
+
+def _main_direction_from_points(positive_points: np.ndarray) -> np.ndarray:
+    if len(positive_points) < 2:
+        return np.asarray([1.0, 0.0], dtype=np.float32)
+
+    points = positive_points.astype(np.float64)
+    centered = points - points.mean(axis=0)
+    if np.allclose(centered, 0.0):
+        return np.asarray([1.0, 0.0], dtype=np.float32)
+
+    _, _, vh = np.linalg.svd(centered, full_matrices=False)
+    direction = vh[0]
+    norm = float(np.linalg.norm(direction))
+    if norm == 0:
+        return np.asarray([1.0, 0.0], dtype=np.float32)
+    direction = direction / norm
+
+    dominant_index = 0 if abs(direction[0]) >= abs(direction[1]) else 1
+    if direction[dominant_index] < 0:
+        direction = -direction
+    return direction.astype(np.float32)
+
+
+def _negative_candidates_from_oriented_side_points(
+    positive_points: np.ndarray,
+    image_width: int,
+    image_height: int,
+    min_padding_px: float,
+    min_negative_distance: float,
+) -> np.ndarray:
+    positives = _clamp_points(positive_points, image_width, image_height)
+    centroid = positives.mean(axis=0).astype(np.float32)
+    main_direction = _main_direction_from_points(positives)
+    perpendicular = np.asarray(
+        [-float(main_direction[1]), float(main_direction[0])],
+        dtype=np.float32,
+    )
+
+    centered = positives - centroid
+    main_projection = centered @ main_direction
+    perpendicular_projection = centered @ perpendicular
+    min_projection = float(np.min(main_projection))
+    max_projection = float(np.max(main_projection))
+    if np.isclose(min_projection, max_projection):
+        line_positions = np.asarray([0.0], dtype=np.float32)
+    else:
+        line_positions = np.asarray(
+            [
+                min_projection,
+                (min_projection + max_projection) / 2.0,
+                max_projection,
+            ],
+            dtype=np.float32,
+        )
+
+    perpendicular_half_span = float(np.max(np.abs(perpendicular_projection)))
+    side_offset = max(
+        perpendicular_half_span + float(min_padding_px),
+        float(min_negative_distance),
+        1.0,
+    )
+    base_points = centroid[None, :] + line_positions[:, None] * main_direction[None, :]
+    negative_points = np.concatenate(
+        [
+            base_points + side_offset * perpendicular[None, :],
+            base_points - side_offset * perpendicular[None, :],
+        ],
+        axis=0,
+    )
+    return _clamp_points(negative_points.astype(np.float32), image_width, image_height)
 
 
 def _filter_negative_points_by_distance(
@@ -351,6 +426,21 @@ def generate_expanded_box_negative_points(
     negative_mode: str = NEGATIVE_MODE_BOX_4_CORNERS,
 ) -> np.ndarray:
     positives = _clamp_points(positive_points, image_width, image_height)
+    negative_mode = _validate_negative_mode(negative_mode)
+    if negative_mode == NEGATIVE_MODE_ORIENTED_SIDE_POINTS:
+        negative_points = _negative_candidates_from_oriented_side_points(
+            positive_points=positives,
+            image_width=image_width,
+            image_height=image_height,
+            min_padding_px=min_padding_px,
+            min_negative_distance=min_negative_distance,
+        )
+        return _filter_negative_points_by_distance(
+            negative_points=negative_points,
+            positive_points=positives,
+            min_negative_distance=min_negative_distance,
+        )
+
     box = compute_expanded_prompt_box(
         positives,
         image_width=image_width,

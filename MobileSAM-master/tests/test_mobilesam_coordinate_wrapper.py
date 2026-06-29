@@ -124,6 +124,34 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             [[0.0, 0.0], [99.0, 0.0], [99.0, 79.0], [0.0, 79.0]],
         )
 
+    def test_oriented_side_points_generate_negatives_on_both_sides_of_diagonal_line(self):
+        prompt = build_augmented_prompt_json(
+            positive_points=[[20.0, 20.0], [40.0, 40.0], [60.0, 60.0]],
+            image_width=100,
+            image_height=100,
+            min_padding_px=10,
+            min_negative_distance=0,
+            negative_mode="oriented_side_points",
+        )
+
+        obj = prompt["objects"][0]
+        self.assertEqual(prompt["negative_mode"], "oriented_side_points")
+        self.assertEqual(obj["negative_mode"], "oriented_side_points")
+        self.assertEqual(obj["point_labels"], [1, 1, 1, 0, 0, 0, 0, 0, 0])
+        np.testing.assert_allclose(
+            obj["negative_points"],
+            [
+                [12.928932, 27.071068],
+                [32.928932, 47.071068],
+                [52.928932, 67.071068],
+                [27.071068, 12.928932],
+                [47.071068, 32.928932],
+                [67.071068, 52.928932],
+            ],
+            rtol=1e-5,
+            atol=1e-5,
+        )
+
     def test_prepare_coordinate_prompt_json_does_not_overwrite_source(self):
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
