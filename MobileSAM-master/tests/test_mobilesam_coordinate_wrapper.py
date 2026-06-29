@@ -304,8 +304,8 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertEqual(saved_mask[0, 0], 0)
             np.testing.assert_allclose(predictor.calls[0]["box"], [0.0, 0.0, 30.0, 30.0])
 
-    def test_select_frames_for_frame_step_uses_direct_user_step(self):
-        frame_paths = [Path(f"frame_{index:06d}.png") for index in range(13)]
+    def test_select_frames_for_frame_step_skips_first_and_last_five_before_direct_step(self):
+        frame_paths = [Path(f"frame_{index:06d}.png") for index in range(20)]
 
         selected = select_frames_for_frame_step(
             frame_paths,
@@ -315,13 +315,22 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
         self.assertEqual(
             [path.name for path in selected],
             [
-                "frame_000000.png",
-                "frame_000003.png",
-                "frame_000006.png",
-                "frame_000009.png",
-                "frame_000012.png",
+                "frame_000005.png",
+                "frame_000008.png",
+                "frame_000011.png",
+                "frame_000014.png",
             ],
         )
+
+    def test_select_frames_for_frame_step_returns_empty_when_only_boundary_frames_remain(self):
+        frame_paths = [Path(f"frame_{index:06d}.png") for index in range(10)]
+
+        selected = select_frames_for_frame_step(
+            frame_paths,
+            frame_step=1,
+        )
+
+        self.assertEqual(selected, [])
 
     def test_run_coordinate_prompt_folders_samples_frames_and_writes_outputs(self):
         with TemporaryDirectory() as tmp:
@@ -353,20 +362,18 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
                 frame_step=3,
             )
 
-            self.assertEqual(result["processed_frames"], 4)
+            self.assertEqual(result["processed_frames"], 1)
             self.assertEqual(
                 [path.name for path in result["frame_paths"]],
                 [
-                    "frame_000000.png",
-                    "frame_000003.png",
-                    "frame_000006.png",
-                    "frame_000009.png",
+                    "frame_000005.png",
                 ],
             )
-            self.assertTrue((output_root / "frames" / "frame_000000.png").exists())
-            self.assertTrue((output_root / "coordinates" / "frame_000000.json").exists())
-            self.assertTrue((output_root / "mask" / "frame_000000.png").exists())
-            self.assertTrue((output_root / "masked_frame" / "frame_000000.jpg").exists())
+            self.assertFalse((output_root / "frames" / "frame_000000.png").exists())
+            self.assertTrue((output_root / "frames" / "frame_000005.png").exists())
+            self.assertTrue((output_root / "coordinates" / "frame_000005.json").exists())
+            self.assertTrue((output_root / "mask" / "frame_000005.png").exists())
+            self.assertTrue((output_root / "masked_frame" / "frame_000005.jpg").exists())
             self.assertIsNone(result["frames_zip"])
             self.assertIsNone(result["masks_zip"])
             self.assertIsNone(result["previews_zip"])
@@ -406,8 +413,8 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
                 )
             )
 
-            self.assertEqual([update["completed"] for update in updates], [0, 1, 2, 3, 4, 4])
-            self.assertEqual([update["total"] for update in updates], [4, 4, 4, 4, 4, 4])
+            self.assertEqual([update["completed"] for update in updates], [0, 1, 1])
+            self.assertEqual([update["total"] for update in updates], [1, 1, 1])
             self.assertEqual(updates[0]["stage"], "starting")
             self.assertEqual(updates[-1]["stage"], "done")
             self.assertIsNone(updates[-1]["result"]["frames_zip"])

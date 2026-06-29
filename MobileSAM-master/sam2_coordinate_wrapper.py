@@ -3,6 +3,7 @@ import json
 import shutil
 import sys
 import types
+import urllib.request
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
@@ -16,6 +17,7 @@ from mobilesam_coordinate_wrapper import (
     DEFAULT_NEGATIVE_MODE,
     DEFAULT_PADDING_RATIO,
     DEFAULT_RAW_MASK_DATA_DIR,
+    FRAME_BOUNDARY_SKIP,
     NEGATIVE_MODES,
     SUPPORTED_FRAME_EXTENSIONS,
     build_augmented_prompt_object,
@@ -31,8 +33,50 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE_FRAMES_DIR = PROJECT_ROOT / "data" / "frames"
 DEFAULT_SOURCE_COORDINATES_DIR = PROJECT_ROOT / "data" / "coordinates"
 SAM2_REPO_ROOT = PROJECT_ROOT / "sam2"
-DEFAULT_SAM2_CHECKPOINT = SAM2_REPO_ROOT / "checkpoints" / "sam2.1_hiera_small.pt"
-DEFAULT_SAM2_CONFIG = "configs/sam2.1/sam2.1_hiera_s.yaml"
+SAM2_CHECKPOINTS_DIR = SAM2_REPO_ROOT / "checkpoints"
+SAM2_MODEL_DOWNLOAD_BASE_URL = "https://dl.fbaipublicfiles.com/segment_anything_2/092824"
+DEFAULT_SAM2_MODEL = "sam2.1_hiera_small.pt"
+SAM2_MODEL_OPTIONS = {
+    "sam2.1_hiera_tiny.pt": {
+        "label": "SAM2.1 Hiera Tiny",
+        "checkpoint_name": "sam2.1_hiera_tiny.pt",
+        "config": "configs/sam2.1/sam2.1_hiera_t.yaml",
+        "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_tiny.pt",
+    },
+    "sam2.1_hiera_small.pt": {
+        "label": "SAM2.1 Hiera Small",
+        "checkpoint_name": "sam2.1_hiera_small.pt",
+        "config": "configs/sam2.1/sam2.1_hiera_s.yaml",
+        "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_small.pt",
+    },
+    "sam2.1_hiera_base_plus.pt": {
+        "label": "SAM2.1 Hiera Base Plus",
+        "checkpoint_name": "sam2.1_hiera_base_plus.pt",
+        "config": "configs/sam2.1/sam2.1_hiera_b+.yaml",
+        "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_base_plus.pt",
+    },
+    "sam2.1_hiera_large.pt": {
+        "label": "SAM2.1 Hiera Large",
+        "checkpoint_name": "sam2.1_hiera_large.pt",
+        "config": "configs/sam2.1/sam2.1_hiera_l.yaml",
+        "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_large.pt",
+    },
+}
+SAM2_MODEL_CHOICES = tuple(SAM2_MODEL_OPTIONS.keys())
+DEFAULT_SAM2_CHECKPOINT = SAM2_CHECKPOINTS_DIR / DEFAULT_SAM2_MODEL
+DEFAULT_SAM2_CONFIG = SAM2_MODEL_OPTIONS[DEFAULT_SAM2_MODEL]["config"]
+
+
+def resolve_sam2_model_option(model_name: Optional[str] = None) -> Dict[str, Any]:
+    selected_model = str(model_name or DEFAULT_SAM2_MODEL)
+    if selected_model not in SAM2_MODEL_OPTIONS:
+        allowed = ", ".join(SAM2_MODEL_CHOICES)
+        raise ValueError(f"SAM2 model must be one of: {allowed}. Got {selected_model!r}.")
+
+    option = dict(SAM2_MODEL_OPTIONS[selected_model])
+    option["name"] = selected_model
+    option["checkpoint"] = SAM2_CHECKPOINTS_DIR / option["checkpoint_name"]
+    return option
 
 
 def _ensure_sam2_on_path() -> None:
@@ -106,12 +150,38 @@ def install_torchvision_transform_stub_for_sam2() -> None:
     sys.modules["torchvision.transforms"] = transforms_module
 
 
-def resolve_sam2_checkpoint(checkpoint: Optional[Path] = None) -> Path:
-    resolved = Path(checkpoint) if checkpoint is not None else DEFAULT_SAM2_CHECKPOINT
+def download_sam2_checkpoint(model_name: Optional[str] = None) -> Path:
+    model_option = resolve_sam2_model_option(model_name)
+    checkpoint_path = Path(model_option["checkpoint"])
+    checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".download")
+    if temporary_path.exists():
+        temporary_path.unlink()
+
+    urllib.request.urlretrieve(model_option["url"], temporary_path)
+    temporary_path.replace(checkpoint_path)
+    return checkpoint_path
+
+
+def resolve_sam2_checkpoint(
+    checkpoint: Optional[Path] = None,
+    model_name: Optional[str] = None,
+    download_checkpoint: bool = False,
+) -> Path:
+    if checkpoint is not None:
+        resolved = Path(checkpoint)
+        checkpoint_hint = str(resolved)
+    else:
+        model_option = resolve_sam2_model_option(model_name)
+        resolved = Path(model_option["checkpoint"])
+        checkpoint_hint = model_option["checkpoint_name"]
+
     if not resolved.exists():
+        if checkpoint is None and download_checkpoint:
+            return download_sam2_checkpoint(model_name)
         raise FileNotFoundError(
             f"SAM2 checkpoint not found: {resolved}. "
-            "Download sam2.1_hiera_small.pt into sam2/checkpoints/."
+            f"Download {checkpoint_hint} into sam2/checkpoints/."
         )
     return resolved
 
@@ -131,8 +201,10 @@ def resolve_sam2_device(device: Optional[str] = None) -> str:
 
 def load_sam2_predictor(
     checkpoint: Optional[Path] = None,
-    config: str = DEFAULT_SAM2_CONFIG,
+    config: Optional[str] = None,
     device: Optional[str] = None,
+    model_name: Optional[str] = None,
+    download_checkpoint: bool = False,
 ):
     _ensure_sam2_on_path()
     install_torchvision_transform_stub_for_sam2()
@@ -141,9 +213,17 @@ def load_sam2_predictor(
     from sam2.sam2_image_predictor import SAM2ImagePredictor
 
     resolved_device = resolve_sam2_device(device)
+    model_option = resolve_sam2_model_option(model_name)
+    resolved_config = config or str(model_option["config"])
     model = build_sam2(
-        config,
-        ckpt_path=str(resolve_sam2_checkpoint(checkpoint)),
+        resolved_config,
+        ckpt_path=str(
+            resolve_sam2_checkpoint(
+                checkpoint=checkpoint,
+                model_name=model_option["name"],
+                download_checkpoint=download_checkpoint,
+            )
+        ),
         device=resolved_device,
         apply_postprocessing=False,
     )
@@ -565,8 +645,10 @@ def iter_sam2_coordinate_prompt_folder_steps(
     output_root: Path = DEFAULT_RAW_MASK_DATA_DIR,
     predictor=None,
     checkpoint: Optional[Path] = None,
-    config: str = DEFAULT_SAM2_CONFIG,
+    config: Optional[str] = None,
+    sam2_model: str = DEFAULT_SAM2_MODEL,
     device: Optional[str] = None,
+    download_checkpoint: bool = False,
     frame_step: Optional[float] = None,
     target_fps: Optional[float] = None,
     source_fps: Optional[float] = None,
@@ -608,6 +690,7 @@ def iter_sam2_coordinate_prompt_folder_steps(
         "total": total,
         "message": (
             f"Selected {total} frame(s) from {len(frame_paths)} input frame(s) "
+            f"after skipping the first and last {FRAME_BOUNDARY_SKIP} frame(s) "
             f"with frame_step={int(float(effective_frame_step)):g}"
         ),
         "result": None,
@@ -648,13 +731,15 @@ def iter_sam2_coordinate_prompt_folder_steps(
             "stage": "loading-model",
             "completed": 0,
             "total": total,
-            "message": "Loading SAM2 model",
+            "message": f"Loading SAM2 model {sam2_model}",
             "result": None,
         }
         predictor, resolved_device = load_sam2_predictor(
             checkpoint=checkpoint,
             config=config,
+            model_name=sam2_model,
             device=device,
+            download_checkpoint=download_checkpoint,
         )
     else:
         resolved_device = device or "provided predictor"
@@ -702,6 +787,7 @@ def iter_sam2_coordinate_prompt_folder_steps(
 
     result = {
         "engine": "sam2",
+        "sam2_model": sam2_model,
         "processed_frames": len(selected_frame_paths),
         "frame_paths": selected_frame_paths,
         "source_frames_dir": frames_dir,
@@ -729,8 +815,10 @@ def run_sam2_coordinate_prompt_folders(
     output_root: Path = DEFAULT_RAW_MASK_DATA_DIR,
     predictor=None,
     checkpoint: Optional[Path] = None,
-    config: str = DEFAULT_SAM2_CONFIG,
+    config: Optional[str] = None,
+    sam2_model: str = DEFAULT_SAM2_MODEL,
     device: Optional[str] = None,
+    download_checkpoint: bool = False,
     frame_step: Optional[float] = None,
     target_fps: Optional[float] = None,
     source_fps: Optional[float] = None,
@@ -749,7 +837,9 @@ def run_sam2_coordinate_prompt_folders(
         predictor=predictor,
         checkpoint=checkpoint,
         config=config,
+        sam2_model=sam2_model,
         device=device,
+        download_checkpoint=download_checkpoint,
         frame_step=frame_step,
         target_fps=target_fps,
         source_fps=source_fps,
@@ -788,8 +878,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--negative-mode", choices=NEGATIVE_MODES, default=DEFAULT_NEGATIVE_MODE)
     parser.add_argument("--score-threshold", type=float, default=0.0)
     parser.add_argument("--max-mask-area-ratio", type=float, default=DEFAULT_MAX_MASK_AREA_RATIO)
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_SAM2_CHECKPOINT)
-    parser.add_argument("--config", default=DEFAULT_SAM2_CONFIG)
+    parser.add_argument("--checkpoint", type=Path, default=None)
+    parser.add_argument("--config", default=None)
+    parser.add_argument("--sam2-model", choices=SAM2_MODEL_CHOICES, default=DEFAULT_SAM2_MODEL)
+    parser.add_argument("--download-checkpoint", action="store_true")
     parser.add_argument("--device", default=None)
     return parser
 
@@ -803,7 +895,9 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         output_root=args.output_root,
         checkpoint=args.checkpoint,
         config=args.config,
+        sam2_model=args.sam2_model,
         device=args.device,
+        download_checkpoint=args.download_checkpoint,
         frame_step=frame_step,
         source_fps=args.source_fps,
         padding_ratio=args.padding_ratio,
@@ -814,6 +908,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         max_mask_area_ratio=args.max_mask_area_ratio,
     )
     print(f"processed_frames={result['processed_frames']}")
+    print(f"sam2_model={result['sam2_model']}")
     print(f"frames_dir={result['frames_dir']}")
     print(f"source_coordinates_dir={result['source_coordinates_dir']}")
     print(f"coordinates_dir={result['coordinates_dir']}")

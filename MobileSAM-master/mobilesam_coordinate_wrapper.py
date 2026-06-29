@@ -27,6 +27,7 @@ DEFAULT_PADDING_RATIO = 0.35
 DEFAULT_MIN_PADDING_PX = 20.0
 DEFAULT_MIN_NEGATIVE_DISTANCE = 10.0
 DEFAULT_MAX_MASK_AREA_RATIO = 4.0
+FRAME_BOUNDARY_SKIP = 5
 PromptObject = Tuple[np.ndarray, np.ndarray, int, Optional[np.ndarray]]
 
 
@@ -658,7 +659,10 @@ def select_frames_for_frame_step(
     frame_step: float,
 ) -> List[Path]:
     sorted_paths = sorted(frame_paths)
-    return list(sorted_paths[::_coerce_frame_step(frame_step)])
+    if len(sorted_paths) <= FRAME_BOUNDARY_SKIP * 2:
+        return []
+    trimmed_paths = sorted_paths[FRAME_BOUNDARY_SKIP:-FRAME_BOUNDARY_SKIP]
+    return list(trimmed_paths[::_coerce_frame_step(frame_step)])
 
 
 def select_frames_for_target_fps(

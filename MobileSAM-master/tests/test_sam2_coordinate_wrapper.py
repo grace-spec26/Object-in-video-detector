@@ -11,8 +11,11 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from sam2_coordinate_wrapper import (  # noqa: E402
+    DEFAULT_SAM2_MODEL,
+    SAM2_MODEL_CHOICES,
     iter_sam2_coordinate_prompt_folder_steps,
     load_sam2_prompt_objects,
+    resolve_sam2_model_option,
     run_sam2_for_frame,
     select_frames_for_frame_step,
 )
@@ -48,6 +51,29 @@ class FakeSAM2Predictor:
 
 
 class SAM2CoordinateWrapperTest(unittest.TestCase):
+    def test_sam2_model_options_include_all_hiera_21_checkpoints(self):
+        self.assertEqual(
+            SAM2_MODEL_CHOICES,
+            (
+                "sam2.1_hiera_tiny.pt",
+                "sam2.1_hiera_small.pt",
+                "sam2.1_hiera_base_plus.pt",
+                "sam2.1_hiera_large.pt",
+            ),
+        )
+        self.assertEqual(DEFAULT_SAM2_MODEL, "sam2.1_hiera_small.pt")
+
+        option = resolve_sam2_model_option("sam2.1_hiera_base_plus.pt")
+
+        self.assertEqual(option["checkpoint_name"], "sam2.1_hiera_base_plus.pt")
+        self.assertEqual(option["config"], "configs/sam2.1/sam2.1_hiera_b+.yaml")
+        self.assertTrue(str(option["checkpoint"]).endswith("sam2/checkpoints/sam2.1_hiera_base_plus.pt"))
+        self.assertIn("sam2.1_hiera_base_plus.pt", option["url"])
+
+    def test_sam2_model_option_rejects_unknown_model(self):
+        with self.assertRaisesRegex(ValueError, "sam2.1_hiera_small.pt"):
+            resolve_sam2_model_option("bad-model.pt")
+
     def test_load_sam2_prompt_objects_uses_augmented_json_directly(self):
         with TemporaryDirectory() as tmp:
             coordinate_path = Path(tmp) / "frame_000000.json"
@@ -127,7 +153,7 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             frames_dir.mkdir(parents=True)
             coordinates_dir.mkdir(parents=True)
 
-            for index in range(2):
+            for index in range(12):
                 Image.fromarray(np.zeros((6, 6, 3), dtype=np.uint8)).save(
                     frames_dir / f"frame_{index:06d}.png"
                 )
@@ -160,8 +186,8 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             self.assertEqual(updates[-1]["stage"], "done")
             self.assertTrue((frames_dir / "frame_000000.png").exists())
             self.assertTrue((coordinates_dir / "frame_000000.json").exists())
-            self.assertTrue((output_root / "mask" / "frame_000000.png").exists())
-            self.assertTrue((output_root / "masked_frames" / "frame_000000.jpg").exists())
+            self.assertTrue((output_root / "mask" / "frame_000005.png").exists())
+            self.assertTrue((output_root / "masked_frames" / "frame_000005.jpg").exists())
 
     def test_iter_sam2_coordinate_prompt_folder_steps_writes_processed_coordinates(self):
         with TemporaryDirectory() as tmp:
@@ -180,23 +206,23 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             stale_coordinate_path = processed_coordinates_dir / "stale.json"
             stale_coordinate_path.write_text("{}", encoding="utf-8")
 
-            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8)).save(
-                frames_dir / "frame_000000.png"
-            )
-            (source_coordinates_dir / "frame_000000.json").write_text(
-                json.dumps(
-                        {
-                            "objects": [
-                                {
-                                    "class_id": 1,
-                                    "point_coords": [[40.0, 40.0], [60.0, 60.0], [4.0, 4.0]],
-                                    "point_labels": [1, 1, 0],
-                                }
-                            ]
-                        }
-                ),
-                encoding="utf-8",
-            )
+            coordinate_payload = {
+                "objects": [
+                    {
+                        "class_id": 1,
+                        "point_coords": [[40.0, 40.0], [60.0, 60.0], [4.0, 4.0]],
+                        "point_labels": [1, 1, 0],
+                    }
+                ]
+            }
+            for index in range(12):
+                Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8)).save(
+                    frames_dir / f"frame_{index:06d}.png"
+                )
+                (source_coordinates_dir / f"frame_{index:06d}.json").write_text(
+                    json.dumps(coordinate_payload),
+                    encoding="utf-8",
+                )
 
             predictor = FakeSAM2Predictor()
             updates = list(
@@ -211,8 +237,8 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             )
 
             result = updates[-1]["result"]
-            output_frame_path = output_frames_dir / "frame_000000.png"
-            processed_coordinate_path = processed_coordinates_dir / "frame_000000.json"
+            output_frame_path = output_frames_dir / "frame_000005.png"
+            processed_coordinate_path = processed_coordinates_dir / "frame_000005.json"
             self.assertEqual(result["source_frames_dir"], frames_dir)
             self.assertEqual(result["frames_dir"], output_frames_dir)
             self.assertEqual(result["source_coordinates_dir"], source_coordinates_dir)
@@ -225,7 +251,7 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             processed_json = json.loads(processed_coordinate_path.read_text(encoding="utf-8"))
             self.assertEqual(
                 processed_json["source_coordinate_json"],
-                str(source_coordinates_dir / "frame_000000.json"),
+                str(source_coordinates_dir / "frame_000005.json"),
             )
             self.assertEqual(
                 processed_json["objects"][0]["positive_points"],
@@ -252,21 +278,27 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
             self.assertEqual(predictor.calls[0]["box"], [20.0, 20.0, 80.0, 80.0])
 
-    def test_select_frames_for_frame_step_uses_direct_user_step(self):
-        frame_paths = [Path(f"frame_{index:06d}.png") for index in range(13)]
+    def test_select_frames_for_frame_step_skips_first_and_last_five_before_direct_step(self):
+        frame_paths = [Path(f"frame_{index:06d}.png") for index in range(20)]
 
         selected = select_frames_for_frame_step(frame_paths, frame_step=3)
 
         self.assertEqual(
             [path.name for path in selected],
             [
-                "frame_000000.png",
-                "frame_000003.png",
-                "frame_000006.png",
-                "frame_000009.png",
-                "frame_000012.png",
+                "frame_000005.png",
+                "frame_000008.png",
+                "frame_000011.png",
+                "frame_000014.png",
             ],
         )
+
+    def test_select_frames_for_frame_step_returns_empty_when_only_boundary_frames_remain(self):
+        frame_paths = [Path(f"frame_{index:06d}.png") for index in range(10)]
+
+        selected = select_frames_for_frame_step(frame_paths, frame_step=1)
+
+        self.assertEqual(selected, [])
 
     def test_iter_sam2_coordinate_prompt_folder_steps_respects_frame_step(self):
         with TemporaryDirectory() as tmp:
@@ -312,13 +344,14 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             stages = [update["stage"] for update in updates]
             result = updates[-1]["result"]
             self.assertEqual(stages[:3], ["scanned", "prepared-output", "starting"])
-            self.assertEqual(result["processed_frames"], 4)
-            self.assertTrue((output_root / "frames" / "frame_000000.png").exists())
-            self.assertTrue((output_root / "frames" / "frame_000003.png").exists())
-            self.assertTrue((output_root / "frames" / "frame_000006.png").exists())
-            self.assertTrue((output_root / "frames" / "frame_000009.png").exists())
+            self.assertEqual(result["processed_frames"], 1)
+            self.assertFalse((output_root / "frames" / "frame_000000.png").exists())
+            self.assertTrue((output_root / "frames" / "frame_000005.png").exists())
+            self.assertFalse((output_root / "frames" / "frame_000003.png").exists())
+            self.assertFalse((output_root / "frames" / "frame_000006.png").exists())
+            self.assertFalse((output_root / "frames" / "frame_000009.png").exists())
             self.assertFalse((output_root / "frames" / "frame_000001.png").exists())
-            self.assertTrue((output_root / "coordinates" / "frame_000009.json").exists())
+            self.assertTrue((output_root / "coordinates" / "frame_000005.json").exists())
             self.assertIsNone(result["frames_zip"])
             self.assertIsNone(result["masks_zip"])
             self.assertIsNone(result["previews_zip"])
