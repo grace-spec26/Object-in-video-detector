@@ -50,6 +50,16 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         self.assertIn("batch_progress_html", timer_block)
         self.assertIn("queue=False", timer_block)
 
+    def test_coordinate_folder_ui_does_not_create_zip_download_outputs(self):
+        app_source = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertNotIn("batch_frames_download = gr.File", app_source)
+        self.assertNotIn("batch_masks_download = gr.File", app_source)
+        self.assertNotIn("batch_previews_download = gr.File", app_source)
+        self.assertNotIn("frames_zip", app_source)
+        self.assertNotIn("masks_zip", app_source)
+        self.assertNotIn("previews_zip", app_source)
+
     def test_coordinate_folder_worker_reports_before_setup(self):
         app_source = APP_PATH.read_text(encoding="utf-8")
 

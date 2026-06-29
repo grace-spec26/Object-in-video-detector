@@ -331,6 +331,9 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             output_root = tmp_path / "raw-mask-data"
             frames_dir.mkdir(parents=True)
             coordinates_dir.mkdir(parents=True)
+            output_root.mkdir(parents=True)
+            for archive_name in ("frames.zip", "mask.zip", "masked_frame.zip"):
+                (output_root / archive_name).write_text("stale", encoding="utf-8")
 
             for index in range(12):
                 Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8)).save(
@@ -364,9 +367,12 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertTrue((output_root / "coordinates" / "frame_000000.json").exists())
             self.assertTrue((output_root / "mask" / "frame_000000.png").exists())
             self.assertTrue((output_root / "masked_frame" / "frame_000000.jpg").exists())
-            self.assertTrue(result["frames_zip"].exists())
-            self.assertTrue(result["masks_zip"].exists())
-            self.assertTrue(result["previews_zip"].exists())
+            self.assertIsNone(result["frames_zip"])
+            self.assertIsNone(result["masks_zip"])
+            self.assertIsNone(result["previews_zip"])
+            self.assertFalse((output_root / "frames.zip").exists())
+            self.assertFalse((output_root / "mask.zip").exists())
+            self.assertFalse((output_root / "masked_frame.zip").exists())
             self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
 
     def test_iter_coordinate_prompt_folder_steps_yields_per_frame_updates(self):
@@ -377,6 +383,9 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             output_root = tmp_path / "raw-mask-data"
             frames_dir.mkdir(parents=True)
             coordinates_dir.mkdir(parents=True)
+            output_root.mkdir(parents=True)
+            for archive_name in ("frames.zip", "mask.zip", "masked_frame.zip"):
+                (output_root / archive_name).write_text("stale", encoding="utf-8")
 
             for index in range(12):
                 Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8)).save(
@@ -401,9 +410,12 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertEqual([update["total"] for update in updates], [4, 4, 4, 4, 4, 4])
             self.assertEqual(updates[0]["stage"], "starting")
             self.assertEqual(updates[-1]["stage"], "done")
-            self.assertTrue(updates[-1]["result"]["frames_zip"].exists())
-            self.assertTrue(updates[-1]["result"]["masks_zip"].exists())
-            self.assertTrue(updates[-1]["result"]["previews_zip"].exists())
+            self.assertIsNone(updates[-1]["result"]["frames_zip"])
+            self.assertIsNone(updates[-1]["result"]["masks_zip"])
+            self.assertIsNone(updates[-1]["result"]["previews_zip"])
+            self.assertFalse((output_root / "frames.zip").exists())
+            self.assertFalse((output_root / "mask.zip").exists())
+            self.assertFalse((output_root / "masked_frame.zip").exists())
 
     def test_format_coordinate_progress_html_renders_visible_bar(self):
         html = format_coordinate_progress_html(

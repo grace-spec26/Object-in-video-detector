@@ -276,6 +276,9 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             output_root = tmp_path / "raw-mask-data"
             frames_dir.mkdir(parents=True)
             coordinates_dir.mkdir(parents=True)
+            output_root.mkdir(parents=True)
+            for archive_name in ("frames.zip", "mask.zip", "masked_frames.zip"):
+                (output_root / archive_name).write_text("stale", encoding="utf-8")
 
             for index in range(12):
                 Image.fromarray(np.zeros((6, 6, 3), dtype=np.uint8)).save(
@@ -316,6 +319,12 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             self.assertTrue((output_root / "frames" / "frame_000009.png").exists())
             self.assertFalse((output_root / "frames" / "frame_000001.png").exists())
             self.assertTrue((output_root / "coordinates" / "frame_000009.json").exists())
+            self.assertIsNone(result["frames_zip"])
+            self.assertIsNone(result["masks_zip"])
+            self.assertIsNone(result["previews_zip"])
+            self.assertFalse((output_root / "frames.zip").exists())
+            self.assertFalse((output_root / "mask.zip").exists())
+            self.assertFalse((output_root / "masked_frames.zip").exists())
 
 
 if __name__ == "__main__":

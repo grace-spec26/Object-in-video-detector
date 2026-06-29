@@ -516,9 +516,6 @@ coordinate_batch_state = {
     "running": False,
     "status": "Ready",
     "progress_html": format_coordinate_progress_html(0, 1, "Ready"),
-    "frames_zip": None,
-    "masks_zip": None,
-    "previews_zip": None,
 }
 
 
@@ -533,9 +530,6 @@ def get_coordinate_batch_outputs():
     return (
         state.get("status") or "Ready",
         state.get("progress_html") or format_coordinate_progress_html(0, 1, "Ready"),
-        state.get("frames_zip"),
-        state.get("masks_zip"),
-        state.get("previews_zip"),
     )
 
 
@@ -557,9 +551,6 @@ def _run_coordinate_folder_batch_worker(
             1,
             "Initializing SAM2 coordinate folder run",
         ),
-        frames_zip=None,
-        masks_zip=None,
-        previews_zip=None,
     )
     try:
         frames_dir = resolve_user_folder_path(frame_folder, DEFAULT_SOURCE_FRAMES_DIR)
@@ -595,17 +586,11 @@ def _run_coordinate_folder_batch_worker(
                 4,
                 "Loading SAM2 model (first run only)",
             ),
-            frames_zip=None,
-            masks_zip=None,
-            previews_zip=None,
         )
         sam2_runtime = get_sam2_coordinate_runtime()
         set_coordinate_batch_state(
             status="Scanning input folders",
             progress_html=format_coordinate_progress_html(0, 1, "Scanning input folders"),
-            frames_zip=None,
-            masks_zip=None,
-            previews_zip=None,
         )
         final_result = None
         for update in iter_sam2_coordinate_prompt_folder_steps(
@@ -638,7 +623,7 @@ def _run_coordinate_folder_batch_worker(
                     "Processed with SAM2 "
                     f"{result['processed_frames']} frame(s). "
                     f"Source frames: {result['source_frames_dir']} | "
-                    f"Downloaded frames: {result['frames_dir']} | "
+                    f"Output frames: {result['frames_dir']} | "
                     f"Source prompts: {result['source_coordinates_dir']} | "
                     f"Processed prompts: {result['coordinates_dir']} | "
                     f"Raw masks: {result['masks_dir']} | "
@@ -648,17 +633,11 @@ def _run_coordinate_folder_batch_worker(
                     running=False,
                     status=status,
                     progress_html=progress_html,
-                    frames_zip=str(result["frames_zip"]),
-                    masks_zip=str(result["masks_zip"]),
-                    previews_zip=str(result["previews_zip"]),
                 )
             else:
                 set_coordinate_batch_state(
                     status=update["message"],
                     progress_html=progress_html,
-                    frames_zip=None,
-                    masks_zip=None,
-                    previews_zip=None,
                 )
 
         if final_result is None:
@@ -669,9 +648,6 @@ def _run_coordinate_folder_batch_worker(
             running=False,
             status=f"SAM2 batch failed: {exc}",
             progress_html=format_coordinate_progress_html(0, 1, "Failed"),
-            frames_zip=None,
-            masks_zip=None,
-            previews_zip=None,
         )
 
 
@@ -689,9 +665,6 @@ def start_coordinate_folder_batch(
             return (
                 "A SAM2 coordinate folder run is already active.",
                 coordinate_batch_state["progress_html"],
-                coordinate_batch_state.get("frames_zip"),
-                coordinate_batch_state.get("masks_zip"),
-                coordinate_batch_state.get("previews_zip"),
             )
         coordinate_batch_state.update(
             running=True,
@@ -701,9 +674,6 @@ def start_coordinate_folder_batch(
                 1,
                 "Starting SAM2 coordinate folder worker",
             ),
-            frames_zip=None,
-            masks_zip=None,
-            previews_zip=None,
         )
 
     worker = threading.Thread(
@@ -861,9 +831,6 @@ batch_progress_html = gr.HTML(
     value=format_coordinate_progress_html(0, 1, "Ready"),
     label="Progress",
 )
-batch_frames_download = gr.File(label="Download raw-mask-data/frames")
-batch_masks_download = gr.File(label="Download raw-mask-data/mask class-ID PNGs")
-batch_previews_download = gr.File(label="Download raw-mask-data/masked_frames previews")
 point_click_payload = gr.Textbox(
     label="Point click payload",
     interactive=False,
@@ -1005,10 +972,6 @@ with gr.Blocks(
         batch_status.render()
         batch_progress_html.render()
         batch_progress_timer = gr.Timer(0.5)
-        with gr.Row():
-            batch_frames_download.render()
-            batch_masks_download.render()
-            batch_previews_download.render()
 
     upload_img_p.upload(
         reset_points_on_upload,
@@ -1060,9 +1023,6 @@ with gr.Blocks(
         outputs=[
             batch_status,
             batch_progress_html,
-            batch_frames_download,
-            batch_masks_download,
-            batch_previews_download,
         ],
         queue=False,
         show_progress="hidden",
@@ -1072,9 +1032,6 @@ with gr.Blocks(
         outputs=[
             batch_status,
             batch_progress_html,
-            batch_frames_download,
-            batch_masks_download,
-            batch_previews_download,
         ],
         queue=False,
         show_progress="hidden",

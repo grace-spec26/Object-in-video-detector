@@ -449,19 +449,6 @@ def _clear_matching_files(output_dir: Path, patterns: Sequence[str]) -> None:
                 path.unlink()
 
 
-def _make_zip_archive(source_dir: Path, archive_path: Path) -> Path:
-    if archive_path.exists():
-        archive_path.unlink()
-    archive_base = archive_path.with_suffix("")
-    created_path = shutil.make_archive(
-        str(archive_base),
-        "zip",
-        root_dir=source_dir.parent,
-        base_dir=source_dir.name,
-    )
-    return Path(created_path)
-
-
 def _same_path(left: Path, right: Path) -> bool:
     try:
         return left.resolve() == right.resolve()
@@ -643,6 +630,7 @@ def iter_sam2_coordinate_prompt_folder_steps(
         _clear_matching_files(processed_coordinates_dir, ("*.json",))
     else:
         processed_coordinates_dir.mkdir(parents=True, exist_ok=True)
+    _clear_matching_files(output_root, ("frames.zip", "mask.zip", "masked_frame.zip", "masked_frames.zip"))
 
     yield {
         "stage": "prepared-output",
@@ -712,9 +700,6 @@ def iter_sam2_coordinate_prompt_folder_steps(
             "result": None,
         }
 
-    frames_zip = _make_zip_archive(frames_output_dir, output_root / "frames.zip")
-    masks_zip = _make_zip_archive(masks_output_dir, output_root / "mask.zip")
-    previews_zip = _make_zip_archive(previews_output_dir, output_root / "masked_frames.zip")
     result = {
         "engine": "sam2",
         "processed_frames": len(selected_frame_paths),
@@ -725,9 +710,9 @@ def iter_sam2_coordinate_prompt_folder_steps(
         "coordinates_dir": processed_coordinates_dir,
         "masks_dir": masks_output_dir,
         "previews_dir": previews_output_dir,
-        "frames_zip": frames_zip,
-        "masks_zip": masks_zip,
-        "previews_zip": previews_zip,
+        "frames_zip": None,
+        "masks_zip": None,
+        "previews_zip": None,
     }
     yield {
         "stage": "done",
@@ -834,9 +819,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
     print(f"coordinates_dir={result['coordinates_dir']}")
     print(f"masks_dir={result['masks_dir']}")
     print(f"previews_dir={result['previews_dir']}")
-    print(f"frames_zip={result['frames_zip']}")
-    print(f"masks_zip={result['masks_zip']}")
-    print(f"previews_zip={result['previews_zip']}")
 
 
 if __name__ == "__main__":

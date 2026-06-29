@@ -808,19 +808,6 @@ def run_mobilesam_for_frame(
         save_preview(frame_rgb, output_mask, preview_path)
 
 
-def _make_zip_archive(source_dir: Path, archive_path: Path) -> Path:
-    if archive_path.exists():
-        archive_path.unlink()
-    archive_base = archive_path.with_suffix("")
-    created_path = shutil.make_archive(
-        str(archive_base),
-        "zip",
-        root_dir=source_dir.parent,
-        base_dir=source_dir.name,
-    )
-    return Path(created_path)
-
-
 def _progress_iter(items: Sequence[Path], progress: Optional[Any], desc: str) -> Iterable[Path]:
     if progress is not None and hasattr(progress, "tqdm"):
         return progress.tqdm(items, desc=desc)
@@ -910,6 +897,7 @@ def iter_coordinate_prompt_folder_steps(
     _clear_matching_files(coordinates_output_dir, ("*.json",))
     _clear_matching_files(masks_output_dir, ("*.png", "*.jpg", "*.jpeg"))
     _clear_matching_files(previews_output_dir, ("*.png", "*.jpg", "*.jpeg"))
+    _clear_matching_files(output_root, ("frames.zip", "mask.zip", "masked_frame.zip", "masked_frames.zip"))
 
     if predictor is None:
         predictor = load_predictor(checkpoint=checkpoint, device=device)
@@ -951,9 +939,6 @@ def iter_coordinate_prompt_folder_steps(
             "result": None,
         }
 
-    frames_zip = _make_zip_archive(frames_output_dir, output_root / "frames.zip")
-    masks_zip = _make_zip_archive(masks_output_dir, output_root / "mask.zip")
-    previews_zip = _make_zip_archive(previews_output_dir, output_root / "masked_frame.zip")
     result = {
         "processed_frames": len(selected_frame_paths),
         "frame_paths": selected_frame_paths,
@@ -961,9 +946,9 @@ def iter_coordinate_prompt_folder_steps(
         "coordinates_dir": coordinates_output_dir,
         "masks_dir": masks_output_dir,
         "previews_dir": previews_output_dir,
-        "frames_zip": frames_zip,
-        "masks_zip": masks_zip,
-        "previews_zip": previews_zip,
+        "frames_zip": None,
+        "masks_zip": None,
+        "previews_zip": None,
     }
 
     yield {
@@ -1225,9 +1210,6 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         print(f"coordinates_dir={result['coordinates_dir']}")
         print(f"masks_dir={result['masks_dir']}")
         print(f"previews_dir={result['previews_dir']}")
-        print(f"frames_zip={result['frames_zip']}")
-        print(f"masks_zip={result['masks_zip']}")
-        print(f"previews_zip={result['previews_zip']}")
         return
 
     run_directory(
