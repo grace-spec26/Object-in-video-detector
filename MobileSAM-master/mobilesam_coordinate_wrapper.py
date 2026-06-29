@@ -12,6 +12,20 @@ from PIL import Image
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_RAW_MASK_DATA_DIR = PROJECT_ROOT / "raw-mask-data"
 SUPPORTED_FRAME_EXTENSIONS = {".jpg", ".jpeg", ".png"}
+NEGATIVE_MODE_BOX_4_CORNERS = "box_4_corners"
+NEGATIVE_MODE_BOX_8_POINTS = "box_8_points"
+NEGATIVE_MODE_NONE = "none"
+NEGATIVE_MODES = (
+    NEGATIVE_MODE_BOX_4_CORNERS,
+    NEGATIVE_MODE_BOX_8_POINTS,
+    NEGATIVE_MODE_NONE,
+)
+DEFAULT_NEGATIVE_MODE = NEGATIVE_MODE_BOX_8_POINTS
+DEFAULT_PADDING_RATIO = 0.35
+DEFAULT_MIN_PADDING_PX = 20.0
+DEFAULT_MIN_NEGATIVE_DISTANCE = 10.0
+DEFAULT_MAX_MASK_AREA_RATIO = 4.0
+PromptObject = Tuple[np.ndarray, np.ndarray, int, Optional[np.ndarray]]
 
 
 def resolve_checkpoint(checkpoint: Optional[Path]) -> Path:
@@ -217,16 +231,44 @@ def _extract_positive_point_sets(
     raise ValueError(f"Unsupported coordinate JSON format in {source}")
 
 
-def generate_expanded_box_negative_points(
+def _validate_negative_mode(negative_mode: str) -> str:
+    if negative_mode not in NEGATIVE_MODES:
+        allowed = ", ".join(NEGATIVE_MODES)
+        raise ValueError(f"negative_mode must be one of: {allowed}")
+    return negative_mode
+
+
+def _clamp_box(box: Any, image_width: int, image_height: int) -> np.ndarray:
+    box_array = np.asarray(box, dtype=np.float32).reshape(-1)
+    if box_array.shape != (4,):
+        raise ValueError("Expected box prompt as [x1, y1, x2, y2].")
+    x1, y1, x2, y2 = [float(value) for value in box_array.tolist()]
+    min_x, max_x = sorted((x1, x2))
+    min_y, max_y = sorted((y1, y2))
+    return np.asarray(
+        [
+            np.clip(min_x, 0, image_width - 1),
+            np.clip(min_y, 0, image_height - 1),
+            np.clip(max_x, 0, image_width - 1),
+            np.clip(max_y, 0, image_height - 1),
+        ],
+        dtype=np.float32,
+    )
+
+
+def compute_expanded_prompt_box(
     positive_points: np.ndarray,
     image_width: int,
     image_height: int,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
 ) -> np.ndarray:
     if image_width <= 0 or image_height <= 0:
         raise ValueError("Image width and height must be positive.")
     if padding_ratio < 0:
         raise ValueError("Padding ratio must be non-negative.")
+    if min_padding_px < 0:
+        raise ValueError("Minimum padding must be non-negative.")
 
     positives = _clamp_points(positive_points, image_width, image_height)
     min_x = float(np.min(positives[:, 0]))
@@ -236,8 +278,17 @@ def generate_expanded_box_negative_points(
 
     width = max_x - min_x
     height = max_y - min_y
-    pad_x = max(width * float(padding_ratio), 1.0 if width == 0 else 0.0)
-    pad_y = max(height * float(padding_ratio), 1.0 if height == 0 else 0.0)
+    # Pixel coordinates are stored and prompted as (x, y).
+    pad_x = max(
+        width * float(padding_ratio),
+        float(min_padding_px),
+        1.0 if width == 0 and min_padding_px == 0 else 0.0,
+    )
+    pad_y = max(
+        height * float(padding_ratio),
+        float(min_padding_px),
+        1.0 if height == 0 and min_padding_px == 0 else 0.0,
+    )
 
     expanded_min_x = max(0.0, min_x - pad_x)
     expanded_max_x = min(float(image_width - 1), max_x + pad_x)
@@ -245,13 +296,73 @@ def generate_expanded_box_negative_points(
     expanded_max_y = min(float(image_height - 1), max_y + pad_y)
 
     return np.asarray(
-        [
-            [expanded_min_x, expanded_min_y],
-            [expanded_max_x, expanded_min_y],
-            [expanded_max_x, expanded_max_y],
-            [expanded_min_x, expanded_max_y],
-        ],
+        [expanded_min_x, expanded_min_y, expanded_max_x, expanded_max_y],
         dtype=np.float32,
+    )
+
+
+def _negative_candidates_from_box(box: np.ndarray, negative_mode: str) -> np.ndarray:
+    negative_mode = _validate_negative_mode(negative_mode)
+    if negative_mode == NEGATIVE_MODE_NONE:
+        return np.empty((0, 2), dtype=np.float32)
+
+    x1, y1, x2, y2 = [float(value) for value in box.tolist()]
+    corners = [
+        [x1, y1],
+        [x2, y1],
+        [x2, y2],
+        [x1, y2],
+    ]
+    if negative_mode == NEGATIVE_MODE_BOX_4_CORNERS:
+        return np.asarray(corners, dtype=np.float32)
+
+    center_x = (x1 + x2) / 2.0
+    center_y = (y1 + y2) / 2.0
+    edge_centers = [
+        [center_x, y1],
+        [x2, center_y],
+        [center_x, y2],
+        [x1, center_y],
+    ]
+    return np.asarray(corners + edge_centers, dtype=np.float32)
+
+
+def _filter_negative_points_by_distance(
+    negative_points: np.ndarray,
+    positive_points: np.ndarray,
+    min_negative_distance: float,
+) -> np.ndarray:
+    if min_negative_distance < 0:
+        raise ValueError("Minimum negative distance must be non-negative.")
+    if len(negative_points) == 0 or min_negative_distance == 0:
+        return negative_points
+    distances = negative_points[:, None, :] - positive_points[None, :, :]
+    min_distances = np.sqrt(np.sum(distances * distances, axis=2)).min(axis=1)
+    return negative_points[min_distances >= float(min_negative_distance)]
+
+
+def generate_expanded_box_negative_points(
+    positive_points: np.ndarray,
+    image_width: int,
+    image_height: int,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = NEGATIVE_MODE_BOX_4_CORNERS,
+) -> np.ndarray:
+    positives = _clamp_points(positive_points, image_width, image_height)
+    box = compute_expanded_prompt_box(
+        positives,
+        image_width=image_width,
+        image_height=image_height,
+        padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+    )
+    negative_points = _negative_candidates_from_box(box, negative_mode=negative_mode)
+    return _filter_negative_points_by_distance(
+        negative_points=negative_points,
+        positive_points=positives,
+        min_negative_distance=min_negative_distance,
     )
 
 
@@ -259,19 +370,33 @@ def build_augmented_prompt_object(
     positive_points: Any,
     image_width: int,
     image_height: int,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     class_id: int = 1,
 ) -> Dict[str, Any]:
+    negative_mode = _validate_negative_mode(negative_mode)
     positives = _clamp_points(
         _as_point_array(positive_points, Path("<coordinates>")),
         image_width=image_width,
         image_height=image_height,
+    )
+    box = compute_expanded_prompt_box(
+        positives,
+        image_width=image_width,
+        image_height=image_height,
+        padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
     )
     negatives = generate_expanded_box_negative_points(
         positives,
         image_width=image_width,
         image_height=image_height,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
     )
     point_coords = np.concatenate([positives, negatives], axis=0)
     point_labels = [1] * len(positives) + [0] * len(negatives)
@@ -280,6 +405,10 @@ def build_augmented_prompt_object(
         "class_id": int(class_id),
         "positive_points": _json_ready_points(positives),
         "negative_points": _json_ready_points(negatives),
+        "box": [float(value) for value in box.tolist()],
+        "negative_mode": negative_mode,
+        "min_padding_px": float(min_padding_px),
+        "min_negative_distance": float(min_negative_distance),
         "point_coords": _json_ready_points(point_coords),
         "point_labels": point_labels,
     }
@@ -289,7 +418,10 @@ def build_augmented_prompt_json(
     positive_points: Any,
     image_width: int,
     image_height: int,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     class_id: int = 1,
     source_coordinate_json: Optional[Path] = None,
 ) -> Dict[str, Any]:
@@ -297,12 +429,18 @@ def build_augmented_prompt_json(
         "source_coordinate_json": str(source_coordinate_json) if source_coordinate_json else None,
         "image_size": {"width": int(image_width), "height": int(image_height)},
         "padding_ratio": float(padding_ratio),
+        "min_padding_px": float(min_padding_px),
+        "min_negative_distance": float(min_negative_distance),
+        "negative_mode": _validate_negative_mode(negative_mode),
         "objects": [
             build_augmented_prompt_object(
                 positive_points=positive_points,
                 image_width=image_width,
                 image_height=image_height,
                 padding_ratio=padding_ratio,
+                min_padding_px=min_padding_px,
+                min_negative_distance=min_negative_distance,
+                negative_mode=negative_mode,
                 class_id=class_id,
             )
         ],
@@ -313,8 +451,8 @@ def _prompt_objects_from_augmented_json(
     augmented_prompt_json: Dict[str, Any],
     image_width: int,
     image_height: int,
-) -> List[Tuple[np.ndarray, np.ndarray, int]]:
-    prompt_objects: List[Tuple[np.ndarray, np.ndarray, int]] = []
+) -> List[PromptObject]:
+    prompt_objects: List[PromptObject] = []
     for obj in augmented_prompt_json.get("objects", []):
         coords = _clamp_points(
             _as_point_array(obj.get("point_coords", []), Path("<augmented-coordinates>")),
@@ -324,7 +462,10 @@ def _prompt_objects_from_augmented_json(
         labels = np.asarray(obj.get("point_labels", []), dtype=np.int32)
         if labels.ndim != 1 or len(labels) != len(coords):
             raise ValueError("point_labels length does not match point_coords")
-        prompt_objects.append((coords, labels, int(obj.get("class_id", 1))))
+        prompt_box = None
+        if obj.get("box") is not None:
+            prompt_box = _clamp_box(obj["box"], image_width=image_width, image_height=image_height)
+        prompt_objects.append((coords, labels, int(obj.get("class_id", 1)), prompt_box))
     return prompt_objects
 
 
@@ -333,9 +474,12 @@ def prepare_coordinate_prompt_json(
     image_width: int,
     image_height: int,
     output_path: Optional[Path] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     visible_only: bool = True,
-) -> List[Tuple[np.ndarray, np.ndarray, int]]:
+) -> List[PromptObject]:
     if not coordinate_json_path.exists():
         raise FileNotFoundError(f"Coordinate JSON not found: {coordinate_json_path}")
 
@@ -352,6 +496,9 @@ def prepare_coordinate_prompt_json(
                 image_width=image_width,
                 image_height=image_height,
                 padding_ratio=padding_ratio,
+                min_padding_px=min_padding_px,
+                min_negative_distance=min_negative_distance,
+                negative_mode=negative_mode,
                 class_id=class_id,
             )
         )
@@ -360,6 +507,9 @@ def prepare_coordinate_prompt_json(
         "source_coordinate_json": str(coordinate_json_path),
         "image_size": {"width": int(image_width), "height": int(image_height)},
         "padding_ratio": float(padding_ratio),
+        "min_padding_px": float(min_padding_px),
+        "min_negative_distance": float(min_negative_distance),
+        "negative_mode": _validate_negative_mode(negative_mode),
         "objects": objects,
     }
     if output_path is not None:
@@ -382,14 +532,20 @@ def load_prompt_objects(
     image_height: int,
     visible_only: bool = True,
     augmented_output_path: Optional[Path] = None,
-    padding_ratio: float = 0.15,
-) -> List[Tuple[np.ndarray, np.ndarray, int]]:
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
+) -> List[PromptObject]:
     return prepare_coordinate_prompt_json(
         coordinate_json_path=coordinate_json_path,
         image_width=image_width,
         image_height=image_height,
         output_path=augmented_output_path,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
         visible_only=visible_only,
     )
 
@@ -439,6 +595,64 @@ def save_preview(frame_rgb: np.ndarray, mask: np.ndarray, preview_path: Path) ->
     Image.fromarray(np.clip(overlay, 0, 255).astype(np.uint8)).save(preview_path)
 
 
+def _mask_values_at_points(mask: np.ndarray, points: np.ndarray) -> np.ndarray:
+    if len(points) == 0:
+        return np.empty((0,), dtype=bool)
+    height, width = mask.shape[:2]
+    rounded = np.rint(points).astype(np.int32)
+    xs = np.clip(rounded[:, 0], 0, width - 1)
+    ys = np.clip(rounded[:, 1], 0, height - 1)
+    return mask[ys, xs].astype(bool)
+
+
+def _box_area(prompt_box: Optional[np.ndarray]) -> float:
+    if prompt_box is None:
+        return 0.0
+    x1, y1, x2, y2 = [float(value) for value in prompt_box.tolist()]
+    return max(1.0, (x2 - x1 + 1.0) * (y2 - y1 + 1.0))
+
+
+def select_best_mask(
+    masks: np.ndarray,
+    scores: np.ndarray,
+    point_coords: np.ndarray,
+    point_labels: np.ndarray,
+    prompt_box: Optional[np.ndarray],
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
+) -> int:
+    """Prefer masks that include + prompts, exclude - prompts, and fit the prompt box."""
+    if len(masks) == 0:
+        raise ValueError("MobileSAM returned no masks.")
+    if max_mask_area_ratio <= 0:
+        raise ValueError("max_mask_area_ratio must be positive.")
+
+    positives = point_coords[point_labels == 1]
+    negatives = point_coords[point_labels == 0]
+    bbox_area = _box_area(prompt_box)
+    scored_indices = []
+    for index, mask in enumerate(np.asarray(masks).astype(bool)):
+        positive_hits = _mask_values_at_points(mask, positives)
+        negative_hits = _mask_values_at_points(mask, negatives)
+        positive_score = float(np.mean(positive_hits)) if len(positive_hits) else 0.0
+        negative_score = float(np.mean(~negative_hits)) if len(negative_hits) else 1.0
+        area = float(np.count_nonzero(mask))
+        if bbox_area > 0 and area > 0:
+            max_allowed_area = bbox_area * float(max_mask_area_ratio)
+            area_score = 1.0 if area <= max_allowed_area else max_allowed_area / area
+        else:
+            area_score = 1.0
+        sam_score = float(scores[index]) if index < len(scores) else 0.0
+        combined_score = (
+            5.0 * positive_score
+            + 4.0 * negative_score
+            + 1.0 * area_score
+            + 1.0 * sam_score
+        )
+        scored_indices.append((combined_score, sam_score, -area, index))
+
+    return int(max(scored_indices)[-1])
+
+
 def run_mobilesam_for_frame(
     predictor,
     frame_path: Path,
@@ -446,8 +660,12 @@ def run_mobilesam_for_frame(
     mask_path: Path,
     preview_path: Optional[Path] = None,
     augmented_coordinate_json_path: Optional[Path] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     score_threshold: float = 0.0,
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
     visible_only: bool = True,
 ) -> None:
     if not frame_path.exists():
@@ -462,6 +680,9 @@ def run_mobilesam_for_frame(
         visible_only=visible_only,
         augmented_output_path=augmented_coordinate_json_path,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
     )
 
     output_mask = np.zeros((image_height, image_width), dtype=np.uint8)
@@ -469,13 +690,21 @@ def run_mobilesam_for_frame(
         output_mask[:, :] = 255
     else:
         predictor.set_image(frame_rgb)
-        for point_coords, point_labels, class_id in prompt_objects:
+        for point_coords, point_labels, class_id, prompt_box in prompt_objects:
             masks, scores, _ = predictor.predict(
                 point_coords=point_coords.astype(np.float32),
                 point_labels=point_labels.astype(np.int32),
+                box=None if prompt_box is None else prompt_box.astype(np.float32),
                 multimask_output=True,
             )
-            best_index = int(np.argmax(scores))
+            best_index = select_best_mask(
+                masks=masks,
+                scores=scores,
+                point_coords=point_coords,
+                point_labels=point_labels,
+                prompt_box=prompt_box,
+                max_mask_area_ratio=max_mask_area_ratio,
+            )
             best_mask = masks[best_index].astype(bool)
             best_score = float(scores[best_index])
             if best_score < score_threshold:
@@ -547,8 +776,12 @@ def iter_coordinate_prompt_folder_steps(
     frame_step: Optional[float] = None,
     target_fps: Optional[float] = None,
     source_fps: Optional[float] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     score_threshold: float = 0.0,
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
     visible_only: bool = True,
 ) -> Iterable[Dict[str, Any]]:
     frames_dir = Path(frames_dir)
@@ -612,7 +845,11 @@ def iter_coordinate_prompt_folder_steps(
             preview_path=previews_output_dir / f"{frame_path.stem}.jpg",
             augmented_coordinate_json_path=coordinates_output_dir / f"{frame_path.stem}.json",
             padding_ratio=float(padding_ratio),
+            min_padding_px=float(min_padding_px),
+            min_negative_distance=float(min_negative_distance),
+            negative_mode=negative_mode,
             score_threshold=score_threshold,
+            max_mask_area_ratio=max_mask_area_ratio,
             visible_only=visible_only,
         )
 
@@ -658,8 +895,12 @@ def run_coordinate_prompt_folders(
     frame_step: Optional[float] = None,
     target_fps: Optional[float] = None,
     source_fps: Optional[float] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     score_threshold: float = 0.0,
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
     visible_only: bool = True,
     progress: Optional[Any] = None,
 ) -> Dict[str, Any]:
@@ -675,7 +916,11 @@ def run_coordinate_prompt_folders(
         target_fps=target_fps,
         source_fps=source_fps,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
         score_threshold=score_threshold,
+        max_mask_area_ratio=max_mask_area_ratio,
         visible_only=visible_only,
     ):
         last_update = update
@@ -699,8 +944,12 @@ def run_directory(
     augmented_coordinates_dir: Optional[Path] = None,
     checkpoint: Optional[Path] = None,
     device: Optional[str] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     score_threshold: float = 0.0,
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
     visible_only: bool = True,
     dry_run: bool = False,
 ) -> None:
@@ -747,7 +996,11 @@ def run_directory(
             preview_path=preview_path,
             augmented_coordinate_json_path=augmented_path,
             padding_ratio=padding_ratio,
+            min_padding_px=min_padding_px,
+            min_negative_distance=min_negative_distance,
+            negative_mode=negative_mode,
             score_threshold=score_threshold,
+            max_mask_area_ratio=max_mask_area_ratio,
             visible_only=visible_only,
         )
 
@@ -798,8 +1051,26 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--padding-ratio",
         type=float,
-        default=0.15,
-        help="Expanded-box padding ratio used to create four negative corner prompts.",
+        default=DEFAULT_PADDING_RATIO,
+        help="Expanded-box padding ratio used to generate nearby negative prompts.",
+    )
+    parser.add_argument(
+        "--min-padding-px",
+        type=float,
+        default=DEFAULT_MIN_PADDING_PX,
+        help="Minimum pixel padding added around the positive-point bbox.",
+    )
+    parser.add_argument(
+        "--min-negative-distance",
+        type=float,
+        default=DEFAULT_MIN_NEGATIVE_DISTANCE,
+        help="Discard generated negative prompts closer than this many pixels to a positive prompt.",
+    )
+    parser.add_argument(
+        "--negative-mode",
+        choices=NEGATIVE_MODES,
+        default=DEFAULT_NEGATIVE_MODE,
+        help="Generated negative prompt layout.",
     )
     parser.add_argument("--checkpoint", type=Path, default=None, help="Optional MobileSAM checkpoint path.")
     parser.add_argument("--device", default=None, help="Optional torch device, e.g. cpu or cuda.")
@@ -808,6 +1079,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help="Masks below this score are encoded as 255 ignore instead of wound.",
+    )
+    parser.add_argument(
+        "--max-mask-area-ratio",
+        type=float,
+        default=DEFAULT_MAX_MASK_AREA_RATIO,
+        help="Area tolerance for prompt-aware mask selection relative to the expanded prompt box.",
     )
     parser.add_argument(
         "--include-invisible-points",
@@ -846,7 +1123,11 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             device=args.device,
             frame_step=frame_step,
             padding_ratio=args.padding_ratio,
+            min_padding_px=args.min_padding_px,
+            min_negative_distance=args.min_negative_distance,
+            negative_mode=args.negative_mode,
             score_threshold=args.score_threshold,
+            max_mask_area_ratio=args.max_mask_area_ratio,
             visible_only=not args.include_invisible_points,
         )
         print(f"processed_frames={result['processed_frames']}")
@@ -868,7 +1149,11 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         checkpoint=args.checkpoint,
         device=args.device,
         padding_ratio=args.padding_ratio,
+        min_padding_px=args.min_padding_px,
+        min_negative_distance=args.min_negative_distance,
+        negative_mode=args.negative_mode,
         score_threshold=args.score_threshold,
+        max_mask_area_ratio=args.max_mask_area_ratio,
         visible_only=not args.include_invisible_points,
         dry_run=args.dry_run,
     )

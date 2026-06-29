@@ -10,12 +10,19 @@ import numpy as np
 from PIL import Image
 
 from mobilesam_coordinate_wrapper import (
+    DEFAULT_MAX_MASK_AREA_RATIO,
+    DEFAULT_MIN_NEGATIVE_DISTANCE,
+    DEFAULT_MIN_PADDING_PX,
+    DEFAULT_NEGATIVE_MODE,
+    DEFAULT_PADDING_RATIO,
     DEFAULT_RAW_MASK_DATA_DIR,
+    NEGATIVE_MODES,
     SUPPORTED_FRAME_EXTENSIONS,
     build_augmented_prompt_object,
     format_coordinate_progress_html,
     prepare_coordinate_prompt_json,
     save_preview,
+    select_best_mask,
     select_frames_for_frame_step,
 )
 
@@ -163,6 +170,24 @@ def _clamp_points(points: np.ndarray, image_width: int, image_height: int) -> np
     return clamped
 
 
+def _clamp_box(box: Any, image_width: int, image_height: int) -> np.ndarray:
+    box_array = np.asarray(box, dtype=np.float32).reshape(-1)
+    if box_array.shape != (4,):
+        raise ValueError("Expected box prompt as [x1, y1, x2, y2].")
+    x1, y1, x2, y2 = [float(value) for value in box_array.tolist()]
+    min_x, max_x = sorted((x1, x2))
+    min_y, max_y = sorted((y1, y2))
+    return np.asarray(
+        [
+            np.clip(min_x, 0, image_width - 1),
+            np.clip(min_y, 0, image_height - 1),
+            np.clip(max_x, 0, image_width - 1),
+            np.clip(max_y, 0, image_height - 1),
+        ],
+        dtype=np.float32,
+    )
+
+
 def _points_records_to_prompt(records: Sequence[Dict[str, Any]], source: Path) -> Tuple[np.ndarray, np.ndarray]:
     coords = []
     labels = []
@@ -186,12 +211,18 @@ def _prompt_from_positive_only(
     image_width: int,
     image_height: int,
     padding_ratio: float,
+    min_padding_px: float,
+    min_negative_distance: float,
+    negative_mode: str,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, Any]]:
     augmented = build_augmented_prompt_object(
         positive_points=positive_points,
         image_width=image_width,
         image_height=image_height,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
         class_id=1,
     )
     coords = np.asarray(augmented["point_coords"], dtype=np.float32)
@@ -205,7 +236,10 @@ def _object_to_prompt(
     image_width: int,
     image_height: int,
     padding_ratio: float,
-) -> Tuple[np.ndarray, np.ndarray, int, Dict[str, Any]]:
+    min_padding_px: float,
+    min_negative_distance: float,
+    negative_mode: str,
+) -> Tuple[np.ndarray, np.ndarray, int, Optional[np.ndarray], Dict[str, Any]]:
     class_id = int(obj.get("class_id", 1))
 
     if "point_coords" in obj and "point_labels" in obj:
@@ -220,7 +254,11 @@ def _object_to_prompt(
             "point_coords": _json_ready_points(coords),
             "point_labels": [int(label) for label in labels.tolist()],
         }
-        return coords, labels, class_id, prompt_json
+        prompt_box = None
+        if obj.get("box") is not None:
+            prompt_box = _clamp_box(obj["box"], image_width=image_width, image_height=image_height)
+            prompt_json["box"] = [float(value) for value in prompt_box.tolist()]
+        return coords, labels, class_id, prompt_box, prompt_json
 
     if "positive_points" in obj or "negative_points" in obj:
         positives = np.asarray(obj.get("positive_points", []), dtype=np.float32).reshape(-1, 2)
@@ -231,9 +269,13 @@ def _object_to_prompt(
                 image_width=image_width,
                 image_height=image_height,
                 padding_ratio=padding_ratio,
+                min_padding_px=min_padding_px,
+                min_negative_distance=min_negative_distance,
+                negative_mode=negative_mode,
             )
             prompt_json["class_id"] = class_id
-            return coords, labels, class_id, prompt_json
+            prompt_box = _clamp_box(prompt_json["box"], image_width=image_width, image_height=image_height)
+            return coords, labels, class_id, prompt_box, prompt_json
 
         coords = _clamp_points(np.concatenate([positives, negatives], axis=0), image_width, image_height)
         labels = np.asarray([1] * len(positives) + [0] * len(negatives), dtype=np.int32)
@@ -244,7 +286,11 @@ def _object_to_prompt(
             "point_coords": _json_ready_points(coords),
             "point_labels": [int(label) for label in labels.tolist()],
         }
-        return coords, labels, class_id, prompt_json
+        prompt_box = None
+        if obj.get("box") is not None:
+            prompt_box = _clamp_box(obj["box"], image_width=image_width, image_height=image_height)
+            prompt_json["box"] = [float(value) for value in prompt_box.tolist()]
+        return coords, labels, class_id, prompt_box, prompt_json
 
     if obj.get("points"):
         coords, labels = _points_records_to_prompt(obj["points"], source)
@@ -256,7 +302,11 @@ def _object_to_prompt(
             "point_coords": _json_ready_points(coords),
             "point_labels": [int(label) for label in labels.tolist()],
         }
-        return coords, labels, class_id, prompt_json
+        prompt_box = None
+        if obj.get("box") is not None:
+            prompt_box = _clamp_box(obj["box"], image_width=image_width, image_height=image_height)
+            prompt_json["box"] = [float(value) for value in prompt_box.tolist()]
+        return coords, labels, class_id, prompt_box, prompt_json
 
     raise ValueError(f"Unsupported coordinate object format in {source}")
 
@@ -265,13 +315,16 @@ def load_sam2_prompt_objects(
     coordinate_json_path: Path,
     image_width: int,
     image_height: int,
-    padding_ratio: float = 0.15,
-) -> Tuple[List[Tuple[np.ndarray, np.ndarray, int]], Dict[str, Any]]:
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
+) -> Tuple[List[Tuple[np.ndarray, np.ndarray, int, Optional[np.ndarray]]], Dict[str, Any]]:
     if not coordinate_json_path.exists():
         raise FileNotFoundError(f"Coordinate JSON not found: {coordinate_json_path}")
 
     data = json.loads(coordinate_json_path.read_text(encoding="utf-8"))
-    prompt_objects: List[Tuple[np.ndarray, np.ndarray, int]] = []
+    prompt_objects: List[Tuple[np.ndarray, np.ndarray, int, Optional[np.ndarray]]] = []
     prompt_json_objects = []
 
     if isinstance(data, list):
@@ -280,19 +333,25 @@ def load_sam2_prompt_objects(
             image_width=image_width,
             image_height=image_height,
             padding_ratio=padding_ratio,
+            min_padding_px=min_padding_px,
+            min_negative_distance=min_negative_distance,
+            negative_mode=negative_mode,
         )
-        prompt_objects.append((coords, labels, 1))
+        prompt_objects.append((coords, labels, 1, _clamp_box(prompt_json["box"], image_width, image_height)))
         prompt_json_objects.append(prompt_json)
     elif isinstance(data, dict) and data.get("objects"):
         for obj in data["objects"]:
-            coords, labels, class_id, prompt_json = _object_to_prompt(
+            coords, labels, class_id, prompt_box, prompt_json = _object_to_prompt(
                 obj,
                 source=coordinate_json_path,
                 image_width=image_width,
                 image_height=image_height,
                 padding_ratio=padding_ratio,
+                min_padding_px=min_padding_px,
+                min_negative_distance=min_negative_distance,
+                negative_mode=negative_mode,
             )
-            prompt_objects.append((coords, labels, class_id))
+            prompt_objects.append((coords, labels, class_id, prompt_box))
             prompt_json_objects.append(prompt_json)
     elif isinstance(data, dict):
         if "point_coords" in data and "point_labels" in data:
@@ -301,25 +360,31 @@ def load_sam2_prompt_objects(
                 "point_coords": data["point_coords"],
                 "point_labels": data["point_labels"],
             }
-            coords, labels, class_id, prompt_json = _object_to_prompt(
+            coords, labels, class_id, prompt_box, prompt_json = _object_to_prompt(
                 obj,
                 source=coordinate_json_path,
                 image_width=image_width,
                 image_height=image_height,
                 padding_ratio=padding_ratio,
+                min_padding_px=min_padding_px,
+                min_negative_distance=min_negative_distance,
+                negative_mode=negative_mode,
             )
-            prompt_objects.append((coords, labels, class_id))
+            prompt_objects.append((coords, labels, class_id, prompt_box))
             prompt_json_objects.append(prompt_json)
         elif data.get("points") and isinstance(data["points"][0], dict):
             obj = {"class_id": int(data.get("class_id", 1)), "points": data["points"]}
-            coords, labels, class_id, prompt_json = _object_to_prompt(
+            coords, labels, class_id, prompt_box, prompt_json = _object_to_prompt(
                 obj,
                 source=coordinate_json_path,
                 image_width=image_width,
                 image_height=image_height,
                 padding_ratio=padding_ratio,
+                min_padding_px=min_padding_px,
+                min_negative_distance=min_negative_distance,
+                negative_mode=negative_mode,
             )
-            prompt_objects.append((coords, labels, class_id))
+            prompt_objects.append((coords, labels, class_id, prompt_box))
             prompt_json_objects.append(prompt_json)
         else:
             for key in ("positive_points", "coordinates", "points"):
@@ -329,8 +394,18 @@ def load_sam2_prompt_objects(
                         image_width=image_width,
                         image_height=image_height,
                         padding_ratio=padding_ratio,
+                        min_padding_px=min_padding_px,
+                        min_negative_distance=min_negative_distance,
+                        negative_mode=negative_mode,
                     )
-                    prompt_objects.append((coords, labels, int(data.get("class_id", 1))))
+                    prompt_objects.append(
+                        (
+                            coords,
+                            labels,
+                            int(data.get("class_id", 1)),
+                            _clamp_box(prompt_json["box"], image_width, image_height),
+                        )
+                    )
                     prompt_json_objects.append(prompt_json)
                     break
     else:
@@ -343,6 +418,9 @@ def load_sam2_prompt_objects(
         "source_coordinate_json": str(coordinate_json_path),
         "image_size": {"width": int(image_width), "height": int(image_height)},
         "padding_ratio": float(padding_ratio),
+        "min_padding_px": float(min_padding_px),
+        "min_negative_distance": float(min_negative_distance),
+        "negative_mode": negative_mode,
         "engine": "sam2",
         "objects": prompt_json_objects,
     }
@@ -403,9 +481,12 @@ def write_processed_sam2_coordinate_json(
     source_coordinate_json_path: Path,
     frame_path: Path,
     processed_coordinate_json_path: Path,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
 ) -> Path:
-    """Write processed SAM2 prompts: source positives + generated negative corners."""
+    """Write processed SAM2 prompts without overwriting source coordinate JSON."""
     frame = Image.open(frame_path).convert("RGB")
     image_width, image_height = frame.size
     prepare_coordinate_prompt_json(
@@ -414,6 +495,9 @@ def write_processed_sam2_coordinate_json(
         image_height=image_height,
         output_path=processed_coordinate_json_path,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
         visible_only=True,
     )
     processed_data = json.loads(processed_coordinate_json_path.read_text(encoding="utf-8"))
@@ -432,8 +516,12 @@ def run_sam2_for_frame(
     mask_path: Path,
     preview_path: Optional[Path] = None,
     normalized_coordinate_json_path: Optional[Path] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     score_threshold: float = 0.0,
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
 ) -> None:
     if not frame_path.exists():
         raise FileNotFoundError(f"Frame not found: {frame_path}")
@@ -445,18 +533,29 @@ def run_sam2_for_frame(
         image_width=image_width,
         image_height=image_height,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
     )
 
     output_mask = np.zeros((image_height, image_width), dtype=np.uint8)
     predictor.set_image(frame_rgb)
-    for point_coords, point_labels, class_id in prompt_objects:
+    for point_coords, point_labels, class_id, prompt_box in prompt_objects:
         masks, scores, _ = predictor.predict(
             point_coords=point_coords.astype(np.float32),
             point_labels=point_labels.astype(np.int32),
+            box=None if prompt_box is None else prompt_box.astype(np.float32),
             multimask_output=True,
             normalize_coords=True,
         )
-        best_index = int(np.argmax(scores))
+        best_index = select_best_mask(
+            masks=masks,
+            scores=scores,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            prompt_box=prompt_box,
+            max_mask_area_ratio=max_mask_area_ratio,
+        )
         best_mask = masks[best_index].astype(bool)
         best_score = float(scores[best_index])
         if best_score < score_threshold:
@@ -484,8 +583,12 @@ def iter_sam2_coordinate_prompt_folder_steps(
     frame_step: Optional[float] = None,
     target_fps: Optional[float] = None,
     source_fps: Optional[float] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     score_threshold: float = 0.0,
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
 ) -> Iterable[Dict[str, Any]]:
     frames_dir = Path(frames_dir)
     coordinates_dir = Path(coordinates_dir)
@@ -583,6 +686,9 @@ def iter_sam2_coordinate_prompt_folder_steps(
             frame_path=output_frame_path,
             processed_coordinate_json_path=processed_coordinates_dir / f"{frame_path.stem}.json",
             padding_ratio=padding_ratio,
+            min_padding_px=min_padding_px,
+            min_negative_distance=min_negative_distance,
+            negative_mode=negative_mode,
         )
         run_sam2_for_frame(
             predictor=predictor,
@@ -592,7 +698,11 @@ def iter_sam2_coordinate_prompt_folder_steps(
             preview_path=previews_output_dir / f"{frame_path.stem}.jpg",
             normalized_coordinate_json_path=None,
             padding_ratio=padding_ratio,
+            min_padding_px=min_padding_px,
+            min_negative_distance=min_negative_distance,
+            negative_mode=negative_mode,
             score_threshold=score_threshold,
+            max_mask_area_ratio=max_mask_area_ratio,
         )
         yield {
             "stage": "processing",
@@ -639,8 +749,12 @@ def run_sam2_coordinate_prompt_folders(
     frame_step: Optional[float] = None,
     target_fps: Optional[float] = None,
     source_fps: Optional[float] = None,
-    padding_ratio: float = 0.15,
+    padding_ratio: float = DEFAULT_PADDING_RATIO,
+    min_padding_px: float = DEFAULT_MIN_PADDING_PX,
+    min_negative_distance: float = DEFAULT_MIN_NEGATIVE_DISTANCE,
+    negative_mode: str = DEFAULT_NEGATIVE_MODE,
     score_threshold: float = 0.0,
+    max_mask_area_ratio: float = DEFAULT_MAX_MASK_AREA_RATIO,
 ) -> Dict[str, Any]:
     last_update = None
     for update in iter_sam2_coordinate_prompt_folder_steps(
@@ -655,7 +769,11 @@ def run_sam2_coordinate_prompt_folders(
         target_fps=target_fps,
         source_fps=source_fps,
         padding_ratio=padding_ratio,
+        min_padding_px=min_padding_px,
+        min_negative_distance=min_negative_distance,
+        negative_mode=negative_mode,
         score_threshold=score_threshold,
+        max_mask_area_ratio=max_mask_area_ratio,
     ):
         last_update = update
 
@@ -679,8 +797,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--target-fps", type=float, default=None, help="Deprecated alias for --frame-step.")
     parser.add_argument("--source-fps", type=float, default=None, help="Deprecated; frame sampling uses --frame-step.")
-    parser.add_argument("--padding-ratio", type=float, default=0.15)
+    parser.add_argument("--padding-ratio", type=float, default=DEFAULT_PADDING_RATIO)
+    parser.add_argument("--min-padding-px", type=float, default=DEFAULT_MIN_PADDING_PX)
+    parser.add_argument("--min-negative-distance", type=float, default=DEFAULT_MIN_NEGATIVE_DISTANCE)
+    parser.add_argument("--negative-mode", choices=NEGATIVE_MODES, default=DEFAULT_NEGATIVE_MODE)
     parser.add_argument("--score-threshold", type=float, default=0.0)
+    parser.add_argument("--max-mask-area-ratio", type=float, default=DEFAULT_MAX_MASK_AREA_RATIO)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_SAM2_CHECKPOINT)
     parser.add_argument("--config", default=DEFAULT_SAM2_CONFIG)
     parser.add_argument("--device", default=None)
@@ -700,7 +822,11 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         frame_step=frame_step,
         source_fps=args.source_fps,
         padding_ratio=args.padding_ratio,
+        min_padding_px=args.min_padding_px,
+        min_negative_distance=args.min_negative_distance,
+        negative_mode=args.negative_mode,
         score_threshold=args.score_threshold,
+        max_mask_area_ratio=args.max_mask_area_ratio,
     )
     print(f"processed_frames={result['processed_frames']}")
     print(f"frames_dir={result['frames_dir']}")

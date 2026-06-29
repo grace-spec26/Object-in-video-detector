@@ -22,35 +22,74 @@ from mobilesam_coordinate_wrapper import (  # noqa: E402
 
 
 class FakePredictor:
-    def __init__(self):
+    def __init__(self, masks=None, scores=None):
         self.calls = []
+        self.masks = masks
+        self.scores = scores
 
     def set_image(self, image):
         self.image_shape = image.shape
 
-    def predict(self, point_coords, point_labels, multimask_output):
+    def predict(self, point_coords, point_labels, multimask_output, box=None):
         self.calls.append(
             {
                 "coords": np.asarray(point_coords).tolist(),
                 "labels": np.asarray(point_labels).tolist(),
                 "multimask_output": multimask_output,
+                "box": None if box is None else np.asarray(box).tolist(),
             }
         )
+        if self.masks is not None:
+            return (
+                np.asarray(self.masks),
+                np.asarray(self.scores, dtype=np.float32),
+                None,
+            )
         mask = np.zeros(self.image_shape[:2], dtype=bool)
         mask[1:3, 1:3] = True
         return np.asarray([mask]), np.asarray([0.9], dtype=np.float32), None
 
 
 class MobileSAMCoordinateWrapperTest(unittest.TestCase):
+    def test_build_augmented_prompt_json_defaults_to_box_8_points(self):
+        prompt = build_augmented_prompt_json(
+            positive_points=[[50, 50], [70, 90]],
+            image_width=200,
+            image_height=200,
+        )
+
+        obj = prompt["objects"][0]
+        np.testing.assert_allclose(obj["box"], [30.0, 30.0, 90.0, 110.0])
+        np.testing.assert_allclose(
+            obj["negative_points"],
+            [
+                [30.0, 30.0],
+                [90.0, 30.0],
+                [90.0, 110.0],
+                [30.0, 110.0],
+                [60.0, 30.0],
+                [90.0, 70.0],
+                [60.0, 110.0],
+                [30.0, 70.0],
+            ],
+        )
+        self.assertEqual(obj["point_labels"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+        self.assertEqual(prompt["padding_ratio"], 0.35)
+        self.assertEqual(prompt["negative_mode"], "box_8_points")
+
     def test_build_augmented_prompt_json_adds_expanded_corner_negatives(self):
         prompt = build_augmented_prompt_json(
             positive_points=[[10, 20], [30, 50]],
             image_width=100,
             image_height=80,
             padding_ratio=0.15,
+            min_padding_px=0,
+            min_negative_distance=0,
+            negative_mode="box_4_corners",
         )
 
         obj = prompt["objects"][0]
+        np.testing.assert_allclose(obj["box"], [7.0, 15.5, 33.0, 54.5])
         np.testing.assert_allclose(
             obj["point_coords"],
             [
@@ -75,6 +114,9 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             image_width=100,
             image_height=80,
             padding_ratio=0.15,
+            min_padding_px=0,
+            min_negative_distance=0,
+            negative_mode="box_4_corners",
         )
 
         self.assertEqual(
@@ -87,21 +129,21 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             tmp_path = Path(tmp)
             source_path = tmp_path / "frame_000000.json"
             output_path = tmp_path / "raw-mask-data" / "coordinates" / "frame_000000.json"
-            source_json = [[2.0, 3.0], [6.0, 9.0]]
+            source_json = [[40.0, 40.0], [60.0, 60.0]]
             source_path.write_text(json.dumps(source_json), encoding="utf-8")
 
             prompt_objects = prepare_coordinate_prompt_json(
                 source_path,
-                image_width=20,
-                image_height=20,
+                image_width=100,
+                image_height=100,
                 output_path=output_path,
-                padding_ratio=0.15,
             )
 
             self.assertEqual(json.loads(source_path.read_text(encoding="utf-8")), source_json)
             augmented = json.loads(output_path.read_text(encoding="utf-8"))
             self.assertEqual(augmented["objects"][0]["positive_points"], source_json)
-            self.assertEqual(augmented["objects"][0]["point_labels"], [1, 1, 0, 0, 0, 0])
+            self.assertEqual(augmented["objects"][0]["point_labels"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+            self.assertEqual(augmented["negative_mode"], "box_8_points")
             self.assertEqual(len(prompt_objects), 1)
 
     def test_prepare_coordinate_prompt_json_generates_negatives_from_source_positives(self):
@@ -130,6 +172,9 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
                 image_height=20,
                 output_path=output_path,
                 padding_ratio=0.15,
+                min_padding_px=0,
+                min_negative_distance=0,
+                negative_mode="box_4_corners",
             )
 
             augmented = json.loads(output_path.read_text(encoding="utf-8"))
@@ -186,6 +231,10 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
                 mask_path=mask_path,
                 preview_path=preview_path,
                 augmented_coordinate_json_path=augmented_path,
+                padding_ratio=0.15,
+                min_padding_px=0,
+                min_negative_distance=0,
+                negative_mode="box_4_corners",
             )
 
             np.testing.assert_allclose(
@@ -193,8 +242,39 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
                 [[1.0, 1.0], [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
             )
             self.assertEqual(predictor.calls[0]["labels"], [1, 0, 0, 0, 0])
+            np.testing.assert_allclose(predictor.calls[0]["box"], [0.0, 0.0, 2.0, 2.0])
             self.assertTrue(mask_path.exists())
             self.assertTrue(preview_path.exists())
+
+    def test_run_mobilesam_for_frame_prefers_mask_matching_prompt_points(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            frame_path = tmp_path / "frame_000000.png"
+            coordinate_path = tmp_path / "frame_000000.json"
+            mask_path = tmp_path / "mask" / "frame_000000.png"
+
+            Image.fromarray(np.zeros((40, 40, 3), dtype=np.uint8)).save(frame_path)
+            coordinate_path.write_text(json.dumps([[10.0, 10.0]]), encoding="utf-8")
+
+            oversized_mask = np.ones((40, 40), dtype=bool)
+            prompt_fit_mask = np.zeros((40, 40), dtype=bool)
+            prompt_fit_mask[8:13, 8:13] = True
+            predictor = FakePredictor(
+                masks=[oversized_mask, prompt_fit_mask],
+                scores=[0.99, 0.2],
+            )
+
+            run_mobilesam_for_frame(
+                predictor=predictor,
+                frame_path=frame_path,
+                coordinate_json_path=coordinate_path,
+                mask_path=mask_path,
+            )
+
+            saved_mask = np.asarray(Image.open(mask_path))
+            self.assertEqual(saved_mask[10, 10], 1)
+            self.assertEqual(saved_mask[0, 0], 0)
+            np.testing.assert_allclose(predictor.calls[0]["box"], [0.0, 0.0, 30.0, 30.0])
 
     def test_select_frames_for_frame_step_uses_direct_user_step(self):
         frame_paths = [Path(f"frame_{index:06d}.png") for index in range(13)]
@@ -225,11 +305,11 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             coordinates_dir.mkdir(parents=True)
 
             for index in range(12):
-                Image.fromarray(np.zeros((4, 4, 3), dtype=np.uint8)).save(
+                Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8)).save(
                     frames_dir / f"frame_{index:06d}.png"
                 )
                 (coordinates_dir / f"frame_{index:06d}.json").write_text(
-                    json.dumps([[1.0, 1.0], [2.0, 2.0]]),
+                    json.dumps([[40.0, 40.0], [60.0, 60.0]]),
                     encoding="utf-8",
                 )
 
@@ -259,7 +339,7 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertTrue(result["frames_zip"].exists())
             self.assertTrue(result["masks_zip"].exists())
             self.assertTrue(result["previews_zip"].exists())
-            self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0])
+            self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
 
     def test_iter_coordinate_prompt_folder_steps_yields_per_frame_updates(self):
         with TemporaryDirectory() as tmp:

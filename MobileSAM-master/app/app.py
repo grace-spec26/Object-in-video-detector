@@ -112,7 +112,12 @@ if str(MOBILE_SAM_ROOT) not in sys.path:
 
 from PIL import Image, ImageDraw
 from mobilesam_coordinate_wrapper import (
+    DEFAULT_MIN_NEGATIVE_DISTANCE,
+    DEFAULT_MIN_PADDING_PX,
+    DEFAULT_NEGATIVE_MODE,
+    DEFAULT_PADDING_RATIO,
     DEFAULT_RAW_MASK_DATA_DIR,
+    NEGATIVE_MODES,
     format_coordinate_progress_html,
 )
 from sam2_coordinate_wrapper import (
@@ -539,6 +544,9 @@ def _run_coordinate_folder_batch_worker(
     coordinate_folder,
     frame_step,
     padding_ratio,
+    min_padding_px,
+    min_negative_distance,
+    negative_mode,
 ):
     print("[SAM2 coordinate folders] request received", flush=True)
     set_coordinate_batch_state(
@@ -562,11 +570,24 @@ def _run_coordinate_folder_batch_worker(
         print(
             "[SAM2 coordinate folders] "
             f"frames_dir={frames_dir} coordinates_dir={coordinates_dir} "
-            f"frame_step={frame_step} padding_ratio={padding_ratio}",
+            f"frame_step={frame_step} padding_ratio={padding_ratio} "
+            f"min_padding_px={min_padding_px} min_negative_distance={min_negative_distance} "
+            f"negative_mode={negative_mode}",
             flush=True,
         )
         frame_step_value = parse_frame_step_input(frame_step)
         padding_ratio_value = parse_float_input(padding_ratio, "padding_ratio")
+        min_padding_px_value = parse_float_input(min_padding_px, "min_padding_px")
+        min_negative_distance_value = parse_float_input(
+            min_negative_distance,
+            "min_negative_distance",
+        )
+        negative_mode_value = str(negative_mode or DEFAULT_NEGATIVE_MODE)
+        if negative_mode_value not in NEGATIVE_MODES:
+            raise ValueError(
+                f"negative_mode must be one of {', '.join(NEGATIVE_MODES)}, "
+                f"got {negative_mode_value!r}"
+            )
         set_coordinate_batch_state(
             status="Loading SAM2 model (first run only)",
             progress_html=format_coordinate_progress_html(
@@ -593,6 +614,9 @@ def _run_coordinate_folder_batch_worker(
             output_root=DEFAULT_RAW_MASK_DATA_DIR,
             frame_step=frame_step_value,
             padding_ratio=padding_ratio_value,
+            min_padding_px=min_padding_px_value,
+            min_negative_distance=min_negative_distance_value,
+            negative_mode=negative_mode_value,
             predictor=sam2_runtime["predictor"],
             device=sam2_runtime["device"],
         ):
@@ -656,6 +680,9 @@ def start_coordinate_folder_batch(
     coordinate_folder,
     frame_step,
     padding_ratio,
+    min_padding_px,
+    min_negative_distance,
+    negative_mode,
 ):
     with coordinate_batch_state_lock:
         if coordinate_batch_state.get("running"):
@@ -681,7 +708,15 @@ def start_coordinate_folder_batch(
 
     worker = threading.Thread(
         target=_run_coordinate_folder_batch_worker,
-        args=(frame_folder, coordinate_folder, frame_step, padding_ratio),
+        args=(
+            frame_folder,
+            coordinate_folder,
+            frame_step,
+            padding_ratio,
+            min_padding_px,
+            min_negative_distance,
+            negative_mode,
+        ),
         daemon=True,
     )
     worker.start()
@@ -804,7 +839,23 @@ batch_coordinate_folder = gr.Textbox(
     value=str(DEFAULT_SOURCE_COORDINATES_DIR),
 )
 batch_frame_step = gr.Number(label="frame_step", value=3)
-batch_padding_ratio = gr.Number(label="Negative padding ratio for positive-only JSON", value=0.15)
+batch_negative_mode = gr.Dropdown(
+    choices=list(NEGATIVE_MODES),
+    value=DEFAULT_NEGATIVE_MODE,
+    label="negative_mode",
+)
+batch_padding_ratio = gr.Number(
+    label="Negative padding ratio",
+    value=DEFAULT_PADDING_RATIO,
+)
+batch_min_padding_px = gr.Number(
+    label="Minimum padding px",
+    value=DEFAULT_MIN_PADDING_PX,
+)
+batch_min_negative_distance = gr.Number(
+    label="Minimum negative distance px",
+    value=DEFAULT_MIN_NEGATIVE_DISTANCE,
+)
 batch_status = gr.Textbox(label="Status", interactive=False)
 batch_progress_html = gr.HTML(
     value=format_coordinate_progress_html(0, 1, "Ready"),
@@ -942,7 +993,10 @@ with gr.Blocks(
                 batch_coordinate_folder.render()
             with gr.Column():
                 batch_frame_step.render()
+                batch_negative_mode.render()
                 batch_padding_ratio.render()
+                batch_min_padding_px.render()
+                batch_min_negative_distance.render()
                 batch_process_btn = gr.Button(
                     "Run SAM2 from coordinate folders",
                     variant="primary",
@@ -999,6 +1053,9 @@ with gr.Blocks(
             batch_coordinate_folder,
             batch_frame_step,
             batch_padding_ratio,
+            batch_min_padding_px,
+            batch_min_negative_distance,
+            batch_negative_mode,
         ],
         outputs=[
             batch_status,

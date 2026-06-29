@@ -29,6 +29,7 @@ class FakeSAM2Predictor:
         self,
         point_coords,
         point_labels,
+        box,
         multimask_output,
         normalize_coords,
     ):
@@ -36,6 +37,7 @@ class FakeSAM2Predictor:
             {
                 "coords": np.asarray(point_coords).tolist(),
                 "labels": np.asarray(point_labels).tolist(),
+                "box": None if box is None else np.asarray(box).tolist(),
                 "multimask_output": multimask_output,
                 "normalize_coords": normalize_coords,
             }
@@ -70,10 +72,11 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
                 image_height=8,
             )
 
-            coords, labels, class_id = prompt_objects[0]
+            coords, labels, class_id, prompt_box = prompt_objects[0]
             self.assertEqual(class_id, 1)
             self.assertEqual(coords.tolist(), [[1.0, 1.0], [4.0, 4.0]])
             self.assertEqual(labels.tolist(), [1, 0])
+            self.assertIsNone(prompt_box)
             self.assertEqual(prompt_json["engine"], "sam2")
 
     def test_run_sam2_for_frame_writes_mask_and_preview(self):
@@ -110,6 +113,7 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             )
 
             self.assertEqual(predictor.calls[0]["labels"], [1, 0])
+            self.assertIsNone(predictor.calls[0]["box"])
             self.assertTrue(predictor.calls[0]["normalize_coords"])
             self.assertTrue(mask_path.exists())
             self.assertTrue(preview_path.exists())
@@ -176,7 +180,7 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             stale_coordinate_path = processed_coordinates_dir / "stale.json"
             stale_coordinate_path.write_text("{}", encoding="utf-8")
 
-            Image.fromarray(np.zeros((6, 6, 3), dtype=np.uint8)).save(
+            Image.fromarray(np.zeros((100, 100, 3), dtype=np.uint8)).save(
                 frames_dir / "frame_000000.png"
             )
             (source_coordinates_dir / "frame_000000.json").write_text(
@@ -185,7 +189,7 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
                             "objects": [
                                 {
                                     "class_id": 1,
-                                    "point_coords": [[1.0, 1.0], [3.0, 3.0], [4.0, 4.0]],
+                                    "point_coords": [[40.0, 40.0], [60.0, 60.0], [4.0, 4.0]],
                                     "point_labels": [1, 1, 0],
                                 }
                             ]
@@ -225,13 +229,28 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             )
             self.assertEqual(
                 processed_json["objects"][0]["positive_points"],
-                [[1.0, 1.0], [3.0, 3.0]],
+                [[40.0, 40.0], [60.0, 60.0]],
+            )
+            self.assertEqual(
+                processed_json["objects"][0]["negative_points"],
+                [
+                    [20.0, 20.0],
+                    [80.0, 20.0],
+                    [80.0, 80.0],
+                    [20.0, 80.0],
+                    [50.0, 20.0],
+                    [80.0, 50.0],
+                    [50.0, 80.0],
+                    [20.0, 50.0],
+                ],
             )
             self.assertEqual(
                 processed_json["objects"][0]["point_labels"],
-                [1, 1, 0, 0, 0, 0],
+                [1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
             )
-            self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0])
+            self.assertEqual(processed_json["negative_mode"], "box_8_points")
+            self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
+            self.assertEqual(predictor.calls[0]["box"], [20.0, 20.0, 80.0, 80.0])
 
     def test_select_frames_for_frame_step_uses_direct_user_step(self):
         frame_paths = [Path(f"frame_{index:06d}.png") for index in range(13)]
