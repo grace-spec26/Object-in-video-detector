@@ -10,7 +10,7 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         app_source = APP_PATH.read_text(encoding="utf-8")
 
         skip_index = app_source.index('GRADIO_SKIP_PYI_GENERATION')
-        import_index = app_source.index("import gradio as gr")
+        import_index = app_source.index("import_gradio_with_fast_metadata_checks()")
 
         self.assertLess(skip_index, import_index)
         self.assertIn(
@@ -44,7 +44,7 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         self.assertIn("batch_progress_html = gr.HTML", app_source)
         self.assertIn("batch_progress_timer = gr.Timer", app_source)
         self.assertIn("format_coordinate_progress_html", app_source)
-        self.assertIn("iter_coordinate_prompt_folder_steps", app_source)
+        self.assertIn("iter_sam2_coordinate_prompt_folder_steps", app_source)
         self.assertIn("set_coordinate_batch_state", function_block)
         self.assertIn("poll_coordinate_folder_batch", timer_block)
         self.assertIn("batch_progress_html", timer_block)
@@ -57,11 +57,20 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         function_end = app_source.index("\n\npoint_click_js", function_start)
         function_block = app_source[function_start:function_end]
         first_state_index = function_block.index("set_coordinate_batch_state")
-        first_resolve_index = function_block.index("resolve_folder_path")
+        first_resolve_index = function_block.index("resolve_user_folder_path")
 
         self.assertLess(first_state_index, first_resolve_index)
-        self.assertIn("Initializing MobileSAM coordinate folder run", function_block)
+        self.assertIn("Initializing SAM2 coordinate folder run", function_block)
         self.assertIn("flush=True", function_block)
+
+    def test_coordinate_folder_ui_uses_frame_step_not_target_fps(self):
+        app_source = APP_PATH.read_text(encoding="utf-8")
+
+        self.assertIn('batch_frame_step = gr.Number(label="frame_step", value=3', app_source)
+        self.assertIn("frame_step_value = parse_frame_step_input", app_source)
+        self.assertIn("frame_step=frame_step_value", app_source)
+        self.assertNotIn('gr.Number(label="target_fps"', app_source)
+        self.assertNotIn("source_fps=30.0", app_source)
 
 
 if __name__ == "__main__":

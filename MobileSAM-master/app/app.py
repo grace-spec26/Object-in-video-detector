@@ -473,6 +473,16 @@ def parse_float_input(value, field_name):
         raise ValueError(f"{field_name} must be a number, got {value!r}") from exc
 
 
+def parse_frame_step_input(value):
+    frame_step = parse_float_input(value, "frame_step")
+    if not frame_step.is_integer():
+        raise ValueError(f"frame_step must be a whole number, got {value!r}")
+    frame_step = int(frame_step)
+    if frame_step < 1:
+        raise ValueError("frame_step must be at least 1")
+    return frame_step
+
+
 coordinate_batch_state_lock = threading.Lock()
 coordinate_batch_state = {
     "running": False,
@@ -504,7 +514,7 @@ def get_coordinate_batch_outputs():
 def _run_coordinate_folder_batch_worker(
     frame_folder,
     coordinate_folder,
-    target_fps,
+    frame_step,
     padding_ratio,
 ):
     print("[SAM2 coordinate folders] request received", flush=True)
@@ -529,10 +539,10 @@ def _run_coordinate_folder_batch_worker(
         print(
             "[SAM2 coordinate folders] "
             f"frames_dir={frames_dir} coordinates_dir={coordinates_dir} "
-            f"target_fps={target_fps} padding_ratio={padding_ratio}",
+            f"frame_step={frame_step} padding_ratio={padding_ratio}",
             flush=True,
         )
-        target_fps_value = parse_float_input(target_fps, "target_fps")
+        frame_step_value = parse_frame_step_input(frame_step)
         padding_ratio_value = parse_float_input(padding_ratio, "padding_ratio")
         set_coordinate_batch_state(
             status="Scanning input folders",
@@ -546,8 +556,7 @@ def _run_coordinate_folder_batch_worker(
             frames_dir=frames_dir,
             coordinates_dir=coordinates_dir,
             output_root=DEFAULT_RAW_MASK_DATA_DIR,
-            target_fps=target_fps_value,
-            source_fps=30.0,
+            frame_step=frame_step_value,
             padding_ratio=padding_ratio_value,
         ):
             result = update.get("result")
@@ -608,7 +617,7 @@ def _run_coordinate_folder_batch_worker(
 def start_coordinate_folder_batch(
     frame_folder,
     coordinate_folder,
-    target_fps,
+    frame_step,
     padding_ratio,
 ):
     with coordinate_batch_state_lock:
@@ -635,7 +644,7 @@ def start_coordinate_folder_batch(
 
     worker = threading.Thread(
         target=_run_coordinate_folder_batch_worker,
-        args=(frame_folder, coordinate_folder, target_fps, padding_ratio),
+        args=(frame_folder, coordinate_folder, frame_step, padding_ratio),
         daemon=True,
     )
     worker.start()
@@ -757,7 +766,7 @@ batch_coordinate_folder = gr.Textbox(
     label="Coordinate folder",
     value=str(DEFAULT_SOURCE_COORDINATES_DIR),
 )
-batch_target_fps = gr.Number(label="target_fps", value=30)
+batch_frame_step = gr.Number(label="frame_step", value=3)
 batch_padding_ratio = gr.Number(label="Negative padding ratio for positive-only JSON", value=0.15)
 batch_status = gr.Textbox(label="Status", interactive=False)
 batch_progress_html = gr.HTML(
@@ -895,7 +904,7 @@ with gr.Blocks(
                 batch_frame_folder.render()
                 batch_coordinate_folder.render()
             with gr.Column():
-                batch_target_fps.render()
+                batch_frame_step.render()
                 batch_padding_ratio.render()
                 batch_process_btn = gr.Button(
                     "Run SAM2 from coordinate folders",
@@ -951,7 +960,7 @@ with gr.Blocks(
         inputs=[
             batch_frame_folder,
             batch_coordinate_folder,
-            batch_target_fps,
+            batch_frame_step,
             batch_padding_ratio,
         ],
         outputs=[

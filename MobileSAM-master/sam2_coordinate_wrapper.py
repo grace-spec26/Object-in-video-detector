@@ -16,6 +16,7 @@ from mobilesam_coordinate_wrapper import (
     format_coordinate_progress_html,
     prepare_coordinate_prompt_json,
     save_preview,
+    select_frames_for_frame_step,
 )
 
 
@@ -359,12 +360,7 @@ def select_frames_for_target_fps(
     target_fps: float,
     source_fps: float = 30.0,
 ) -> List[Path]:
-    if target_fps <= 0:
-        raise ValueError("target_fps must be greater than 0.")
-    if source_fps <= 0:
-        raise ValueError("source_fps must be greater than 0.")
-    stride = max(1, int(round(float(source_fps) / float(target_fps))))
-    return list(sorted(frame_paths)[::stride])
+    return select_frames_for_frame_step(frame_paths, frame_step=target_fps)
 
 
 def _clear_matching_files(output_dir: Path, patterns: Sequence[str]) -> None:
@@ -485,8 +481,9 @@ def iter_sam2_coordinate_prompt_folder_steps(
     checkpoint: Optional[Path] = None,
     config: str = DEFAULT_SAM2_CONFIG,
     device: Optional[str] = None,
-    target_fps: float = 30.0,
-    source_fps: float = 30.0,
+    frame_step: Optional[float] = None,
+    target_fps: Optional[float] = None,
+    source_fps: Optional[float] = None,
     padding_ratio: float = 0.15,
     score_threshold: float = 0.0,
 ) -> Iterable[Dict[str, Any]]:
@@ -507,10 +504,12 @@ def iter_sam2_coordinate_prompt_folder_steps(
     if not frame_paths:
         raise RuntimeError(f"No frames found in: {frames_dir}")
 
-    selected_frame_paths = select_frames_for_target_fps(
+    effective_frame_step = frame_step if frame_step is not None else target_fps
+    if effective_frame_step is None:
+        effective_frame_step = 1
+    selected_frame_paths = select_frames_for_frame_step(
         frame_paths,
-        target_fps=float(target_fps),
-        source_fps=float(source_fps),
+        frame_step=effective_frame_step,
     )
     total = len(selected_frame_paths)
     yield {
@@ -519,7 +518,7 @@ def iter_sam2_coordinate_prompt_folder_steps(
         "total": total,
         "message": (
             f"Selected {total} frame(s) from {len(frame_paths)} input frame(s) "
-            f"at target_fps={float(target_fps):g}"
+            f"with frame_step={int(float(effective_frame_step)):g}"
         ),
         "result": None,
     }
@@ -637,8 +636,9 @@ def run_sam2_coordinate_prompt_folders(
     checkpoint: Optional[Path] = None,
     config: str = DEFAULT_SAM2_CONFIG,
     device: Optional[str] = None,
-    target_fps: float = 30.0,
-    source_fps: float = 30.0,
+    frame_step: Optional[float] = None,
+    target_fps: Optional[float] = None,
+    source_fps: Optional[float] = None,
     padding_ratio: float = 0.15,
     score_threshold: float = 0.0,
 ) -> Dict[str, Any]:
@@ -651,6 +651,7 @@ def run_sam2_coordinate_prompt_folders(
         checkpoint=checkpoint,
         config=config,
         device=device,
+        frame_step=frame_step,
         target_fps=target_fps,
         source_fps=source_fps,
         padding_ratio=padding_ratio,
@@ -670,8 +671,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frames-dir", type=Path, default=DEFAULT_SOURCE_FRAMES_DIR)
     parser.add_argument("--coordinates-dir", type=Path, default=DEFAULT_SOURCE_COORDINATES_DIR)
     parser.add_argument("--output-root", type=Path, default=DEFAULT_RAW_MASK_DATA_DIR)
-    parser.add_argument("--target-fps", type=float, default=30.0)
-    parser.add_argument("--source-fps", type=float, default=30.0)
+    parser.add_argument(
+        "--frame-step",
+        type=float,
+        default=1,
+        help="Process every Nth frame. For example, 3 processes frames 0, 3, 6...",
+    )
+    parser.add_argument("--target-fps", type=float, default=None, help="Deprecated alias for --frame-step.")
+    parser.add_argument("--source-fps", type=float, default=None, help="Deprecated; frame sampling uses --frame-step.")
     parser.add_argument("--padding-ratio", type=float, default=0.15)
     parser.add_argument("--score-threshold", type=float, default=0.0)
     parser.add_argument("--checkpoint", type=Path, default=DEFAULT_SAM2_CHECKPOINT)
@@ -682,6 +689,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
     args = build_arg_parser().parse_args(argv)
+    frame_step = args.frame_step if args.target_fps is None else args.target_fps
     result = run_sam2_coordinate_prompt_folders(
         frames_dir=args.frames_dir,
         coordinates_dir=args.coordinates_dir,
@@ -689,7 +697,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
         checkpoint=args.checkpoint,
         config=args.config,
         device=args.device,
-        target_fps=args.target_fps,
+        frame_step=frame_step,
         source_fps=args.source_fps,
         padding_ratio=args.padding_ratio,
         score_threshold=args.score_threshold,

@@ -394,19 +394,33 @@ def load_prompt_objects(
     )
 
 
+def _coerce_frame_step(frame_step: Any, field_name: str = "frame_step") -> int:
+    try:
+        step_value = float(frame_step)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive whole number.") from exc
+    if not step_value.is_integer():
+        raise ValueError(f"{field_name} must be a positive whole number.")
+    step = int(step_value)
+    if step < 1:
+        raise ValueError(f"{field_name} must be at least 1.")
+    return step
+
+
+def select_frames_for_frame_step(
+    frame_paths: Sequence[Path],
+    frame_step: float,
+) -> List[Path]:
+    sorted_paths = sorted(frame_paths)
+    return list(sorted_paths[::_coerce_frame_step(frame_step)])
+
+
 def select_frames_for_target_fps(
     frame_paths: Sequence[Path],
     target_fps: float,
     source_fps: float = 30.0,
 ) -> List[Path]:
-    if target_fps <= 0:
-        raise ValueError("target_fps must be greater than 0.")
-    if source_fps <= 0:
-        raise ValueError("source_fps must be greater than 0.")
-
-    sorted_paths = sorted(frame_paths)
-    stride = max(1, int(round(float(source_fps) / float(target_fps))))
-    return list(sorted_paths[::stride])
+    return select_frames_for_frame_step(frame_paths, frame_step=target_fps)
 
 
 def list_frame_paths(frames_dir: Path) -> List[Path]:
@@ -530,8 +544,9 @@ def iter_coordinate_prompt_folder_steps(
     predictor=None,
     checkpoint: Optional[Path] = None,
     device: Optional[str] = None,
-    target_fps: float = 5.0,
-    source_fps: float = 30.0,
+    frame_step: Optional[float] = None,
+    target_fps: Optional[float] = None,
+    source_fps: Optional[float] = None,
     padding_ratio: float = 0.15,
     score_threshold: float = 0.0,
     visible_only: bool = True,
@@ -553,10 +568,12 @@ def iter_coordinate_prompt_folder_steps(
     if not frame_paths:
         raise RuntimeError(f"No frames found in: {frames_dir}")
 
-    selected_frame_paths = select_frames_for_target_fps(
+    effective_frame_step = frame_step if frame_step is not None else target_fps
+    if effective_frame_step is None:
+        effective_frame_step = 1
+    selected_frame_paths = select_frames_for_frame_step(
         frame_paths,
-        target_fps=float(target_fps),
-        source_fps=float(source_fps),
+        frame_step=effective_frame_step,
     )
     missing_json = [
         coordinates_dir / f"{frame_path.stem}.json"
@@ -638,8 +655,9 @@ def run_coordinate_prompt_folders(
     predictor=None,
     checkpoint: Optional[Path] = None,
     device: Optional[str] = None,
-    target_fps: float = 5.0,
-    source_fps: float = 30.0,
+    frame_step: Optional[float] = None,
+    target_fps: Optional[float] = None,
+    source_fps: Optional[float] = None,
     padding_ratio: float = 0.15,
     score_threshold: float = 0.0,
     visible_only: bool = True,
@@ -653,6 +671,7 @@ def run_coordinate_prompt_folders(
         predictor=predictor,
         checkpoint=checkpoint,
         device=device,
+        frame_step=frame_step,
         target_fps=target_fps,
         source_fps=source_fps,
         padding_ratio=padding_ratio,
@@ -759,16 +778,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="If set, copy sampled frames, augmented coordinates, masks, and zip downloads under this folder.",
     )
     parser.add_argument(
+        "--frame-step",
+        type=float,
+        default=None,
+        help="Process every Nth frame. For example, 3 processes frames 0, 3, 6...",
+    )
+    parser.add_argument(
         "--target-fps",
         type=float,
         default=None,
-        help="Optional sampled processing FPS. Uses --source-fps to compute the frame stride.",
+        help="Deprecated alias for --frame-step.",
     )
     parser.add_argument(
         "--source-fps",
         type=float,
         default=30.0,
-        help="Source frame rate for target FPS sampling. Defaults to 30.",
+        help="Deprecated; frame sampling now uses --frame-step directly.",
     )
     parser.add_argument(
         "--padding-ratio",
@@ -795,20 +820,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Iterable[str]] = None) -> None:
     args = build_arg_parser().parse_args(argv)
-    if args.output_root is not None or args.target_fps is not None:
+    frame_step = args.frame_step if args.frame_step is not None else args.target_fps
+    if frame_step is None:
+        frame_step = 1
+    if args.output_root is not None or args.frame_step is not None or args.target_fps is not None:
         if args.dry_run:
             frame_paths = list_frame_paths(args.frames_dir)
-            selected_frame_paths = select_frames_for_target_fps(
+            selected_frame_paths = select_frames_for_frame_step(
                 frame_paths,
-                target_fps=args.target_fps or args.source_fps,
-                source_fps=args.source_fps,
+                frame_step=frame_step,
             )
             print(f"frames={len(frame_paths)}")
             print(f"selected_frames={len(selected_frame_paths)}")
             print(f"frames_dir={args.frames_dir}")
             print(f"coordinates_dir={args.coordinates_dir}")
             print(f"output_root={args.output_root or DEFAULT_RAW_MASK_DATA_DIR}")
-            print(f"target_fps={args.target_fps or args.source_fps}")
+            print(f"frame_step={_coerce_frame_step(frame_step)}")
             return
 
         result = run_coordinate_prompt_folders(
@@ -817,8 +844,7 @@ def main(argv: Optional[Iterable[str]] = None) -> None:
             output_root=args.output_root or DEFAULT_RAW_MASK_DATA_DIR,
             checkpoint=args.checkpoint,
             device=args.device,
-            target_fps=args.target_fps or args.source_fps,
-            source_fps=args.source_fps,
+            frame_step=frame_step,
             padding_ratio=args.padding_ratio,
             score_threshold=args.score_threshold,
             visible_only=not args.include_invisible_points,

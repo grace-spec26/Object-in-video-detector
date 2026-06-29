@@ -14,6 +14,7 @@ from sam2_coordinate_wrapper import (  # noqa: E402
     iter_sam2_coordinate_prompt_folder_steps,
     load_sam2_prompt_objects,
     run_sam2_for_frame,
+    select_frames_for_frame_step,
 )
 
 
@@ -232,7 +233,23 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             )
             self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0])
 
-    def test_iter_sam2_coordinate_prompt_folder_steps_respects_target_fps(self):
+    def test_select_frames_for_frame_step_uses_direct_user_step(self):
+        frame_paths = [Path(f"frame_{index:06d}.png") for index in range(13)]
+
+        selected = select_frames_for_frame_step(frame_paths, frame_step=3)
+
+        self.assertEqual(
+            [path.name for path in selected],
+            [
+                "frame_000000.png",
+                "frame_000003.png",
+                "frame_000006.png",
+                "frame_000009.png",
+                "frame_000012.png",
+            ],
+        )
+
+    def test_iter_sam2_coordinate_prompt_folder_steps_respects_frame_step(self):
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             frames_dir = tmp_path / "data" / "frames"
@@ -266,19 +283,20 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
                     coordinates_dir=coordinates_dir,
                     output_root=output_root,
                     predictor=FakeSAM2Predictor(),
-                    target_fps=5,
-                    source_fps=30,
+                    frame_step=3,
                 )
             )
 
             stages = [update["stage"] for update in updates]
             result = updates[-1]["result"]
             self.assertEqual(stages[:3], ["scanned", "prepared-output", "starting"])
-            self.assertEqual(result["processed_frames"], 2)
+            self.assertEqual(result["processed_frames"], 4)
             self.assertTrue((output_root / "frames" / "frame_000000.png").exists())
+            self.assertTrue((output_root / "frames" / "frame_000003.png").exists())
             self.assertTrue((output_root / "frames" / "frame_000006.png").exists())
+            self.assertTrue((output_root / "frames" / "frame_000009.png").exists())
             self.assertFalse((output_root / "frames" / "frame_000001.png").exists())
-            self.assertTrue((output_root / "coordinates" / "frame_000006.json").exists())
+            self.assertTrue((output_root / "coordinates" / "frame_000009.json").exists())
 
 
 if __name__ == "__main__":
