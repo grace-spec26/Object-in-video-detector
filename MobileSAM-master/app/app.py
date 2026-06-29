@@ -119,6 +119,7 @@ from sam2_coordinate_wrapper import (
     DEFAULT_SOURCE_COORDINATES_DIR,
     DEFAULT_SOURCE_FRAMES_DIR,
     iter_sam2_coordinate_prompt_folder_steps,
+    load_sam2_predictor,
 )
 
 # Most of our demo code is from [FastSAM Demo](https://huggingface.co/spaces/An-619/FastSAM). Huge thanks for AN-619.
@@ -173,6 +174,28 @@ def get_mobile_sam_runtime():
             }
         )
         return mobile_sam_runtime
+
+
+sam2_coordinate_runtime_lock = threading.Lock()
+sam2_coordinate_runtime = {
+    "device": None,
+    "predictor": None,
+}
+
+
+def get_sam2_coordinate_runtime():
+    with sam2_coordinate_runtime_lock:
+        if sam2_coordinate_runtime["predictor"] is not None:
+            return sam2_coordinate_runtime
+
+        predictor, device = load_sam2_predictor()
+        sam2_coordinate_runtime.update(
+            {
+                "device": device,
+                "predictor": predictor,
+            }
+        )
+        return sam2_coordinate_runtime
 
 # Description
 title = "<center><strong><font size='8'>Faster Segment Anything(MobileSAM)<font></strong></center>"
@@ -545,6 +568,18 @@ def _run_coordinate_folder_batch_worker(
         frame_step_value = parse_frame_step_input(frame_step)
         padding_ratio_value = parse_float_input(padding_ratio, "padding_ratio")
         set_coordinate_batch_state(
+            status="Loading SAM2 model (first run only)",
+            progress_html=format_coordinate_progress_html(
+                0,
+                1,
+                "Loading SAM2 model (first run only)",
+            ),
+            frames_zip=None,
+            masks_zip=None,
+            previews_zip=None,
+        )
+        sam2_runtime = get_sam2_coordinate_runtime()
+        set_coordinate_batch_state(
             status="Scanning input folders",
             progress_html=format_coordinate_progress_html(0, 1, "Scanning input folders"),
             frames_zip=None,
@@ -558,6 +593,8 @@ def _run_coordinate_folder_batch_worker(
             output_root=DEFAULT_RAW_MASK_DATA_DIR,
             frame_step=frame_step_value,
             padding_ratio=padding_ratio_value,
+            predictor=sam2_runtime["predictor"],
+            device=sam2_runtime["device"],
         ):
             result = update.get("result")
             progress_html = format_coordinate_progress_html(

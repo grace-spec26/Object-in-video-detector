@@ -72,6 +72,22 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         self.assertNotIn('gr.Number(label="target_fps"', app_source)
         self.assertNotIn("source_fps=30.0", app_source)
 
+    def test_coordinate_folder_worker_reuses_cached_sam2_predictor(self):
+        app_source = APP_PATH.read_text(encoding="utf-8")
+
+        function_start = app_source.index("def _run_coordinate_folder_batch_worker(")
+        function_end = app_source.index("\n\npoint_click_js", function_start)
+        function_block = app_source[function_start:function_end]
+
+        self.assertIn("load_sam2_predictor", app_source)
+        self.assertIn("sam2_coordinate_runtime", app_source)
+        self.assertIn("def get_sam2_coordinate_runtime():", app_source)
+        self.assertIn('if sam2_coordinate_runtime["predictor"] is not None:', app_source)
+        self.assertIn("Loading SAM2 model (first run only)", function_block)
+        self.assertIn("sam2_runtime = get_sam2_coordinate_runtime()", function_block)
+        self.assertIn('predictor=sam2_runtime["predictor"]', function_block)
+        self.assertIn('device=sam2_runtime["device"]', function_block)
+
 
 if __name__ == "__main__":
     unittest.main()
