@@ -83,6 +83,7 @@ def store_coordinate_arrays(
     output_dir: Path = DEFAULT_COORDINATES_DIR,
     source_hw: Optional[Sequence[int]] = None,
     target_hw: Optional[Sequence[int]] = None,
+    visibility: Optional[np.ndarray] = None,
 ) -> List[Path]:
     """Store selected-point tracks as per-frame JSON arrays of [x, y] pixels."""
     output_dir = Path(output_dir)
@@ -94,8 +95,21 @@ def store_coordinate_arrays(
     elif tracks_array.ndim != 3 or tracks_array.shape[-1] != 2:
         raise ValueError("Tracks must have shape (N, T, 2).")
 
+    visibility_array = None
+    if visibility is not None:
+        visibility_array = np.asarray(visibility, dtype=bool)
+        if visibility_array.shape != tracks_array.shape[:2]:
+            raise ValueError("Visibility must have shape (N, T) to match tracks.")
+
     tracks_by_frame = np.transpose(tracks_array, (1, 0, 2))
-    all_coordinates = tracks_by_frame.tolist()
+    if visibility_array is None:
+        all_coordinates = tracks_by_frame.tolist()
+    else:
+        visibility_by_frame = np.transpose(visibility_array, (1, 0))
+        all_coordinates = [
+            frame_tracks[frame_visibility].tolist()
+            for frame_tracks, frame_visibility in zip(tracks_by_frame, visibility_by_frame)
+        ]
 
     written_paths: List[Path] = []
     for frame_index, frame_coordinates in enumerate(all_coordinates):

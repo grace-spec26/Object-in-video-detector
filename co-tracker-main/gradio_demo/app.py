@@ -400,6 +400,7 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames):
         gr.update(interactive=interactive),
         gr.update(interactive=True),
         None,
+        None,
         gr.update(interactive=False),
         gr.update(interactive=False),
         load_status,
@@ -517,6 +518,7 @@ def track(
     return (
         video_file_path,
         tracks if has_selected_points else None,
+        pred_occ if has_selected_points else None,
         gr.update(interactive=True),
         gr.update(interactive=has_selected_points),
         export_status,
@@ -539,7 +541,7 @@ def store_frames_from_state(video_frames):
     return f"Stored {len(written_paths)} original frames in {DEFAULT_FRAMES_DIR}."
 
 
-def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks):
+def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks, selected_visibility):
     if selected_tracks is None:
         message = "Track selected points before storing coordinates."
         gr.Warning(message, duration=5)
@@ -555,6 +557,7 @@ def store_coordinates_from_state(video_frames, video_preview_array, selected_tra
             output_dir=DEFAULT_COORDINATES_DIR,
             source_hw=video_preview_array.shape[1:3],
             target_hw=video_frames.shape[1:3],
+            visibility=selected_visibility,
         )
     except Exception as exc:
         message = f"Failed to store coordinates: {exc}"
@@ -580,6 +583,7 @@ with gr.Blocks() as demo:
     is_tracked_query = gr.State([])
     query_count = gr.State(0)
     selected_tracks = gr.State(None)
+    selected_visibility = gr.State(None)
 
     gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
     gr.Markdown("<div style='text-align: left;'> \
@@ -695,6 +699,7 @@ with gr.Blocks() as demo:
             clear_all,
             track_button,
             selected_tracks,
+            selected_visibility,
             store_frames_button,
             store_coordinates_button,
             export_status,
@@ -800,6 +805,7 @@ with gr.Blocks() as demo:
         outputs = [
             output_video,
             selected_tracks,
+            selected_visibility,
             store_frames_button,
             store_coordinates_button,
             export_status,
@@ -824,6 +830,7 @@ with gr.Blocks() as demo:
             video,
             video_preview,
             selected_tracks,
+            selected_visibility,
         ],
         outputs = [
             export_status,

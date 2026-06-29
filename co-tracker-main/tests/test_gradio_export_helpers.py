@@ -71,6 +71,54 @@ class ExportHelpersTest(unittest.TestCase):
                 ],
             )
 
+    def test_store_coordinate_arrays_filters_invisible_tracks(self):
+        tracks = np.array(
+            [
+                [[10.0, 20.0], [30.0, 40.0]],
+                [[50.0, 60.0], [70.0, 80.0]],
+            ],
+            dtype=np.float32,
+        )
+        visibility = np.array(
+            [
+                [True, False],
+                [False, True],
+            ],
+            dtype=bool,
+        )
+
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+
+            store_coordinate_arrays(
+                tracks=tracks,
+                output_dir=output_dir,
+                source_hw=(100, 200),
+                target_hw=(300, 400),
+                visibility=visibility,
+            )
+
+            self.assertEqual(
+                json.loads((output_dir / "frame_000000.json").read_text(encoding="utf-8")),
+                [[20.0, 60.0]],
+            )
+            self.assertEqual(
+                json.loads((output_dir / "frame_000001.json").read_text(encoding="utf-8")),
+                [[140.0, 240.0]],
+            )
+
+    def test_store_coordinate_arrays_rejects_mismatched_visibility_shape(self):
+        tracks = np.zeros((2, 3, 2), dtype=np.float32)
+        visibility = np.ones((3, 2), dtype=bool)
+
+        with TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(ValueError, "Visibility"):
+                store_coordinate_arrays(
+                    tracks=tracks,
+                    output_dir=Path(tmp),
+                    visibility=visibility,
+                )
+
     def test_scale_tracks_to_frame_space_clips_to_target_bounds(self):
         tracks = np.array([[[250.0, -10.0]]], dtype=np.float32)
 
