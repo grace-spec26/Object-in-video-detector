@@ -757,8 +757,29 @@
 
       .segment-toolbar {
         display: flex;
+        flex-wrap: wrap;
         gap: 6px;
         margin-bottom: 10px;
+      }
+
+      .segment-video-export {
+        display: flex;
+        gap: 6px;
+        width: 100%;
+      }
+
+      .segment-video-name {
+        flex: 1;
+        min-width: 180px;
+        padding: 6px 10px;
+        border: 2px solid #e0e0e0;
+        border-radius: 4px;
+        font-size: 13px;
+      }
+
+      .segment-video-name:focus {
+        outline: none;
+        border-color: #667eea;
       }
 
       .segment-toolbar-btn {
@@ -834,6 +855,15 @@
             <button type="button" class="segment-toolbar-btn" id="exportSegmentsBtn">Export</button>
             <button type="button" class="segment-toolbar-btn" id="importSegmentsBtn">Import</button>
             <input type="file" id="importFileInput" accept=".json" hidden />
+            <div class="segment-video-export">
+              <input
+                type="text"
+                class="segment-video-name"
+                id="segmentVideoNameInput"
+                placeholder="Output video name"
+              />
+              <button type="button" class="segment-toolbar-btn" id="exportSegmentVideosBtn">Export MP4 Segments</button>
+            </div>
           </div>
           <div class="segment-list" id="segmentList"></div>
           <button type="button" class="add-segment-btn" id="addSegmentBottomBtn">+ Add Segment <kbd>A</kbd></button>
@@ -916,6 +946,7 @@
       let segmentIdCounter = 0
       let sceneDeltas = [] // { time, delta } array, delta normalized 0-1
       let isAnalyzing = false
+      let isExportingSegmentVideos = false
       let chartView = { start: 0, end: 0 } // visible range; 0=fit all
 
       const uploadSection = document.getElementById('uploadSection')
@@ -951,6 +982,8 @@
       const exportSegmentsBtn = document.getElementById('exportSegmentsBtn')
       const importSegmentsBtn = document.getElementById('importSegmentsBtn')
       const importFileInput = document.getElementById('importFileInput')
+      const segmentVideoNameInput = document.getElementById('segmentVideoNameInput')
+      const exportSegmentVideosBtn = document.getElementById('exportSegmentVideosBtn')
       const addSegmentBottomBtn = document.getElementById('addSegmentBottomBtn')
 
       // Drag and drop
@@ -1890,6 +1923,232 @@
         URL.revokeObjectURL(url)
       }
 
+      function sanitizeOutputVideoName(name) {
+        const cleaned = String(name || '')
+          .trim()
+          .replace(/[/\\?%*:|"<>]/g, '_')
+          .replace(/\s+/g, '_')
+          .replace(/^_+|_+$/g, '')
+        return cleaned || videoFileName || 'segment'
+      }
+
+      function getSupportedMp4MimeType() {
+        if (!window.MediaRecorder) return null
+        const mimeTypes = [
+          'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+          'video/mp4;codecs=h264,aac',
+          'video/mp4;codecs=avc1',
+          'video/mp4',
+        ]
+        return mimeTypes.find(type => MediaRecorder.isTypeSupported(type)) || null
+      }
+
+      function getVideoCaptureStream() {
+        if (videoElement.captureStream) return videoElement.captureStream()
+        if (videoElement.mozCaptureStream) return videoElement.mozCaptureStream()
+        if (videoElement.webkitCaptureStream) return videoElement.webkitCaptureStream()
+        return null
+      }
+
+      function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = filename
+        document.body.appendChild(a)
+        a.click()
+        document.body.removeChild(a)
+        setTimeout(() => URL.revokeObjectURL(url), 1000)
+      }
+
+      function seekVideoTo(time) {
+        return new Promise((resolve, reject) => {
+          if (!videoElement) {
+            reject(new Error('No video is loaded'))
+            return
+          }
+
+          const onSeeked = () => {
+            cleanup()
+            resolve()
+          }
+          const onError = () => {
+            cleanup()
+            reject(new Error('Could not seek video'))
+          }
+          const cleanup = () => {
+            videoElement.removeEventListener('seeked', onSeeked)
+            videoElement.removeEventListener('error', onError)
+          }
+
+          if (Math.abs(videoElement.currentTime - time) < 0.025 && videoElement.readyState >= 2) {
+            resolve()
+            return
+          }
+
+          videoElement.addEventListener('seeked', onSeeked, { once: true })
+          videoElement.addEventListener('error', onError, { once: true })
+          videoElement.currentTime = time
+        })
+      }
+
+      function waitForSegmentEnd(start, end, segmentIndex, segmentCount) {
+        return new Promise(resolve => {
+          const segmentDuration = Math.max(end - start, 0.001)
+          let done = false
+          const finish = () => {
+            if (done) return
+            done = true
+            clearTimeout(timeout)
+            resolve()
+          }
+          const timeout = setTimeout(finish, (segmentDuration + 2) * 1000)
+
+          const tick = () => {
+            if (done) return
+            const current = Math.min(Math.max(videoElement.currentTime, start), end)
+            const segmentProgress = (current - start) / segmentDuration
+            const progressPercent = ((segmentIndex + segmentProgress) / segmentCount) * 100
+            progressFill.style.width = `${Math.min(100, progressPercent)}%`
+            progressFill.textContent = `${segmentIndex + 1}/${segmentCount}`
+
+            if (videoElement.currentTime >= end || videoElement.ended) {
+              finish()
+              return
+            }
+            requestAnimationFrame(tick)
+          }
+
+          tick()
+        })
+      }
+
+      async function recordSegmentAsMp4(segment, mimeType, segmentIndex, segmentCount) {
+        const duration = videoElement.duration
+        const start = Math.max(0, Math.min(segment.start, duration))
+        const end = Math.max(start, Math.min(segment.end, duration))
+        if (end <= start) {
+          throw new Error(`Segment ${segmentIndex + 1} has an invalid time range`)
+        }
+
+        await seekVideoTo(start)
+        await new Promise(resolve => requestAnimationFrame(resolve))
+
+        const stream = getVideoCaptureStream()
+        if (!stream || stream.getTracks().length === 0) {
+          throw new Error('This browser cannot capture the loaded video stream')
+        }
+
+        const chunks = []
+        const recorder = new MediaRecorder(stream, { mimeType })
+        const recordingDone = new Promise((resolve, reject) => {
+          recorder.ondataavailable = event => {
+            if (event.data && event.data.size > 0) chunks.push(event.data)
+          }
+          recorder.onerror = event => {
+            reject(event.error || new Error('Segment recording failed'))
+          }
+          recorder.onstop = () => {
+            resolve(new Blob(chunks, { type: mimeType }))
+          }
+        })
+
+        try {
+          recorder.start(250)
+          await videoElement.play()
+          await waitForSegmentEnd(start, end, segmentIndex, segmentCount)
+          videoElement.pause()
+          if (recorder.state !== 'inactive') recorder.stop()
+          return await recordingDone
+        } finally {
+          if (recorder.state !== 'inactive') recorder.stop()
+          stream.getTracks().forEach(track => track.stop())
+        }
+      }
+
+      function getValidatedSegmentsForVideoExport() {
+        readCutPointsFromUI()
+        readExplicitSegmentsFromUI()
+        const duration = videoElement.duration
+        const segments = getSegments()
+          .map(seg => ({
+            start: Math.max(0, Math.min(seg.start, duration)),
+            end: Math.max(0, Math.min(seg.end, duration)),
+          }))
+          .filter(seg => seg.end > seg.start)
+
+        if (segments.length === 0) {
+          throw new Error('No valid segments defined. Add at least one segment.')
+        }
+        return segments
+      }
+
+      async function exportSegmentVideos() {
+        if (isExportingSegmentVideos) return
+        if (!videoFile || !videoElement || videoElement.readyState < 2) {
+          showError('Please select a loaded video file first')
+          return
+        }
+
+        const mimeType = getSupportedMp4MimeType()
+        if (!mimeType) {
+          showError('This browser cannot export MP4 segments with MediaRecorder. Try a browser with video/mp4 MediaRecorder support.')
+          return
+        }
+
+        let segments
+        try {
+          segments = getValidatedSegmentsForVideoExport()
+        } catch (error) {
+          showError(error.message)
+          return
+        }
+
+        const outputName = sanitizeOutputVideoName(segmentVideoNameInput.value)
+        const savedTime = videoElement.currentTime
+        const savedPlaybackRate = videoElement.playbackRate
+        const wasPlaying = !videoElement.paused
+
+        isExportingSegmentVideos = true
+        exportSegmentVideosBtn.disabled = true
+        exportSegmentVideosBtn.textContent = 'Exporting...'
+        extractBtn.disabled = true
+        progress.classList.add('active')
+        progressFill.style.width = '0%'
+        progressFill.textContent = '0%'
+        errorDiv.classList.add('hidden')
+
+        try {
+          videoElement.pause()
+          videoElement.playbackRate = 1
+          for (let i = 0; i < segments.length; i++) {
+            progressFill.textContent = `${i + 1}/${segments.length}`
+            const blob = await recordSegmentAsMp4(segments[i], mimeType, i, segments.length)
+            if (!blob || blob.size === 0) {
+              throw new Error(`Segment ${i + 1} exported an empty video`)
+            }
+            downloadBlob(blob, `${outputName}_${i + 1}.mp4`)
+            await new Promise(resolve => setTimeout(resolve, 250))
+          }
+          progressFill.style.width = '100%'
+          progressFill.textContent = 'Done'
+        } catch (error) {
+          showError('Error exporting MP4 segments: ' + error.message)
+        } finally {
+          videoElement.pause()
+          videoElement.playbackRate = savedPlaybackRate
+          await seekVideoTo(Math.min(savedTime, videoElement.duration)).catch(() => {})
+          if (wasPlaying) await videoElement.play().catch(() => {})
+          exportSegmentVideosBtn.disabled = false
+          exportSegmentVideosBtn.textContent = 'Export MP4 Segments'
+          extractBtn.disabled = false
+          isExportingSegmentVideos = false
+          setTimeout(() => {
+            if (!isExportingSegmentVideos) progress.classList.remove('active')
+          }, 700)
+        }
+      }
+
       // Import segments from a JSON file
       function importSegments(file) {
         const reader = new FileReader()
@@ -1940,6 +2199,9 @@
         controls.classList.remove('hidden')
         document.querySelector('.control-buttons')?.classList.remove('hidden')
         extractBtn.disabled = false
+        exportSegmentVideosBtn.disabled = false
+        exportSegmentVideosBtn.textContent = 'Export MP4 Segments'
+        segmentVideoNameInput.value = videoFileName || 'segment'
         errorDiv.classList.add('hidden')
 
         // Update label to match current mode (handles Firefox stored values)
@@ -2571,6 +2833,9 @@
 
       // Export segments to JSON file
       exportSegmentsBtn.addEventListener('click', exportSegments)
+
+      // Export each segment to a numbered MP4 file.
+      exportSegmentVideosBtn.addEventListener('click', exportSegmentVideos)
 
       // Import segments from JSON file
       importSegmentsBtn.addEventListener('click', () => {
