@@ -141,8 +141,8 @@ def validate_yolo_segmentation_dataset(dataset_dir: Path | str) -> None:
 
     dataset_root = Path(dataset_dir)
     for split in ("train", "val"):
-        images_dir = dataset_root / split / "images"
-        labels_dir = dataset_root / split / "labels"
+        images_dir = _split_images_dir(dataset_root, split)
+        labels_dir = _split_labels_dir(dataset_root, split)
         image_paths = sorted(images_dir.glob("*.jpg"))
         label_paths = sorted(labels_dir.glob("*.txt"))
 
@@ -424,17 +424,20 @@ def _split_count(total: int, train_ratio: float) -> int:
 
 def _prepare_dataset_dir(dataset_root: Path, overwrite: bool) -> None:
     for split in ("train", "val"):
-        split_dir = dataset_root / split
-        if overwrite and split_dir.exists():
-            for child in split_dir.rglob("*"):
-                if child.is_file():
-                    child.unlink()
-        (split_dir / "images").mkdir(parents=True, exist_ok=True)
-        (split_dir / "labels").mkdir(parents=True, exist_ok=True)
+        images_dir = _split_images_dir(dataset_root, split)
+        labels_dir = _split_labels_dir(dataset_root, split)
+        if overwrite:
+            for folder in (images_dir, labels_dir):
+                if folder.exists():
+                    for child in folder.rglob("*"):
+                        if child.is_file():
+                            child.unlink()
+        images_dir.mkdir(parents=True, exist_ok=True)
+        labels_dir.mkdir(parents=True, exist_ok=True)
 
 
 def _next_split_image_index(dataset_root: Path, split: str) -> int:
-    images_dir = dataset_root / split / "images"
+    images_dir = _split_images_dir(dataset_root, split)
     prefix = f"{split}_img"
     max_index = 0
     image_count = 0
@@ -457,8 +460,8 @@ def _write_records(
     image_quality: int,
     start_index: int,
 ) -> None:
-    images_dir = dataset_root / split / "images"
-    labels_dir = dataset_root / split / "labels"
+    images_dir = _split_images_dir(dataset_root, split)
+    labels_dir = _split_labels_dir(dataset_root, split)
 
     next_index = start_index
     for record in records:
@@ -486,13 +489,21 @@ def _write_dataset_yaml(dataset_root: Path) -> None:
     dataset_root.mkdir(parents=True, exist_ok=True)
     yaml_text = (
         f"path: {dataset_root.name}\n"
-        "train: train/images\n"
-        "val: val/images\n"
+        "train: images/train\n"
+        "val: images/val\n"
         "\n"
         "names:\n"
         "  0: wound\n"
     )
     (dataset_root / "dataset.yaml").write_text(yaml_text, encoding="utf-8")
+
+
+def _split_images_dir(dataset_root: Path, split: str) -> Path:
+    return dataset_root / "images" / split
+
+
+def _split_labels_dir(dataset_root: Path, split: str) -> Path:
+    return dataset_root / "labels" / split
 
 
 def _print_stats(stats: ExportStats) -> None:
