@@ -125,6 +125,7 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         self.assertIn("point_sam2_model = gr.Dropdown", app_source)
         self.assertIn("point_sam2_model.render()", app_source)
         self.assertIn("point_sam2_model", click_block)
+        self.assertIn("queue=False", click_block)
 
 
 if __name__ == "__main__":

@@ -318,6 +318,11 @@ def segment_with_points(
         print("No points added")
         return image, image, "no points added"
 
+    print(
+        f"[SAM2 point mode] request received model={sam2_model} "
+        f"points={point_coords.tolist()} labels={point_labels.tolist()}",
+        flush=True,
+    )
     runtime = get_sam2_coordinate_runtime(sam2_model)
     device = runtime["device"]
     predictor = runtime["predictor"]
@@ -1038,6 +1043,8 @@ with gr.Blocks(
         segment_with_points,
         inputs=[cond_img_p, original_img_p, point_sam2_model],
         outputs=[segm_img_p, cond_img_p, status_text_p],
+        queue=False,
+        show_progress="minimal",
     )
     batch_process_btn.click(
         start_coordinate_folder_batch,
@@ -1083,6 +1090,7 @@ with gr.Blocks(
     clear_btn_p.click(
         clear,
         outputs=[upload_img_p, original_img_p, cond_img_p, segm_img_p, status_text_p],
+        queue=False,
     )
     demo.load(None, None, None, queue=False, js=point_click_js)
 
