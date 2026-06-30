@@ -127,6 +127,22 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         self.assertIn("point_sam2_model", click_block)
         self.assertIn("queue=False", click_block)
 
+    def test_point_mode_keeps_prompt_points_after_segmentation(self):
+        app_source = APP_PATH.read_text(encoding="utf-8")
+
+        function_start = app_source.index("def segment_with_points(")
+        function_end = app_source.index("\n\ndef ensure_pil_image", function_start)
+        function_block = app_source[function_start:function_end]
+
+        self.assertIn("prompt_image = ensure_pil_image(image)", function_block)
+        self.assertIn(
+            "segmentation_image = ensure_pil_image(original_image) or prompt_image",
+            function_block,
+        )
+        self.assertNotIn("global_points = []", function_block)
+        self.assertNotIn("global_point_label = []", function_block)
+        self.assertIn("return fig, prompt_image,", function_block)
+
 
 if __name__ == "__main__":
     unittest.main()

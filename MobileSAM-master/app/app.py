@@ -307,16 +307,19 @@ def segment_with_points(
     global global_points
     global global_point_label
 
-    image = ensure_pil_image(original_image) or ensure_pil_image(image)
-    if image is None:
+    prompt_image = ensure_pil_image(image)
+    segmentation_image = ensure_pil_image(original_image) or prompt_image
+    if segmentation_image is None:
         return None, None, "please upload an image first"
+    if prompt_image is None:
+        prompt_image = segmentation_image
 
     point_coords = np.array(global_points, dtype=np.float32)
     point_labels = np.array(global_point_label, dtype=np.int32)
 
     if point_coords.size == 0 and point_labels.size == 0:
         print("No points added")
-        return image, image, "no points added"
+        return segmentation_image, prompt_image, "no points added"
 
     print(
         f"[SAM2 point mode] request received model={sam2_model} "
@@ -333,7 +336,7 @@ def segment_with_points(
         flush=True,
     )
 
-    nd_image = np.array(image)
+    nd_image = np.array(segmentation_image)
     predictor.set_image(nd_image)
     masks, scores, _ = predictor.predict(
         point_coords=point_coords,
@@ -345,7 +348,7 @@ def segment_with_points(
 
     fig = render_annotations_with_fast_process(
         annotations=annotations,
-        image=image,
+        image=segmentation_image,
         device=device,
         scale=1,
         better_quality=better_quality,
@@ -355,10 +358,7 @@ def segment_with_points(
         withContours=withContours,
     )
 
-    global_points = []
-    global_point_label = []
-    # return fig, None
-    return fig, image, f"Segmented with {runtime['model_label']} on {device}"
+    return fig, prompt_image, f"Segmented with {runtime['model_label']} on {device}"
 
 
 def ensure_pil_image(image):
