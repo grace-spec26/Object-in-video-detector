@@ -22,21 +22,36 @@ class YoloSegmentationDatasetExportTest(unittest.TestCase):
             draw.rectangle((x1, y1, x2 - 1, y2 - 1), fill=1)
         mask.save(masks_dir / f"{name}.png")
 
+    def _write_existing_dataset_item(self, dataset_dir, split, stem):
+        images_dir = dataset_dir / split / "images"
+        labels_dir = dataset_dir / split / "labels"
+        images_dir.mkdir(parents=True, exist_ok=True)
+        labels_dir.mkdir(parents=True, exist_ok=True)
+
+        Image.new("RGB", (30, 20), (10, 20, 30)).save(images_dir / f"{stem}.jpg")
+        labels_dir.joinpath(f"{stem}.txt").write_text(
+            "0 0.100000 0.100000 0.800000 0.100000 0.800000 0.800000\n",
+            encoding="utf-8",
+        )
+
+    def _write_sample_raw_mask_data(self, raw_root):
+        frames_dir = raw_root / "frames"
+        masks_dir = raw_root / "mask"
+        frames_dir.mkdir(parents=True)
+        masks_dir.mkdir(parents=True)
+
+        self._write_frame_and_mask(frames_dir, masks_dir, "frame_000005", [(2, 3, 8, 10)])
+        self._write_frame_and_mask(frames_dir, masks_dir, "frame_000020", [(4, 5, 9, 12), (16, 6, 23, 14)])
+        self._write_frame_and_mask(frames_dir, masks_dir, "frame_000030", [(1, 1, 2, 2)])
+        self._write_frame_and_mask(frames_dir, masks_dir, "frame_000040", [(10, 2, 18, 9)])
+        self._write_frame_and_mask(frames_dir, masks_dir, "frame_000050", [(5, 11, 14, 18)])
+
     def test_exports_yolo_polygon_dataset_with_renamed_jpgs_and_split(self):
         with TemporaryDirectory() as tmp:
             root = Path(tmp)
             raw_root = root / "raw-mask-data"
-            frames_dir = raw_root / "frames"
-            masks_dir = raw_root / "mask"
             dataset_dir = root / "dataset"
-            frames_dir.mkdir(parents=True)
-            masks_dir.mkdir(parents=True)
-
-            self._write_frame_and_mask(frames_dir, masks_dir, "frame_000005", [(2, 3, 8, 10)])
-            self._write_frame_and_mask(frames_dir, masks_dir, "frame_000020", [(4, 5, 9, 12), (16, 6, 23, 14)])
-            self._write_frame_and_mask(frames_dir, masks_dir, "frame_000030", [(1, 1, 2, 2)])
-            self._write_frame_and_mask(frames_dir, masks_dir, "frame_000040", [(10, 2, 18, 9)])
-            self._write_frame_and_mask(frames_dir, masks_dir, "frame_000050", [(5, 11, 14, 18)])
+            self._write_sample_raw_mask_data(raw_root)
 
             stats = export_yolo_segmentation_dataset(
                 raw_mask_root=raw_root,
@@ -52,15 +67,22 @@ class YoloSegmentationDatasetExportTest(unittest.TestCase):
             self.assertEqual(stats.train_images, 3)
             self.assertEqual(stats.val_images, 1)
 
-            self.assertTrue((dataset_dir / "train" / "images" / "img1.jpg").exists())
-            self.assertTrue((dataset_dir / "train" / "labels" / "img1.txt").exists())
-            self.assertTrue((dataset_dir / "train" / "images" / "img2.jpg").exists())
-            self.assertTrue((dataset_dir / "train" / "labels" / "img2.txt").exists())
+            self.assertTrue((dataset_dir / "train" / "images" / "train_img00001.jpg").exists())
+            self.assertTrue((dataset_dir / "train" / "labels" / "train_img00001.txt").exists())
+            self.assertTrue((dataset_dir / "train" / "images" / "train_img00002.jpg").exists())
+            self.assertTrue((dataset_dir / "train" / "labels" / "train_img00002.txt").exists())
             self.assertFalse((dataset_dir / "train" / "images" / "frame_000005.png").exists())
-            self.assertTrue((dataset_dir / "val" / "images" / "img4.jpg").exists())
-            self.assertTrue((dataset_dir / "val" / "labels" / "img4.txt").exists())
+            self.assertTrue((dataset_dir / "val" / "images" / "val_img00001.jpg").exists())
+            self.assertTrue((dataset_dir / "val" / "labels" / "val_img00001.txt").exists())
 
-            second_label_rows = (dataset_dir / "train" / "labels" / "img2.txt").read_text(
+            image_names = [
+                path.name
+                for path in sorted((dataset_dir / "train" / "images").glob("*.jpg"))
+                + sorted((dataset_dir / "val" / "images").glob("*.jpg"))
+            ]
+            self.assertEqual(len(image_names), len(set(image_names)))
+
+            second_label_rows = (dataset_dir / "train" / "labels" / "train_img00002.txt").read_text(
                 encoding="utf-8"
             ).strip().splitlines()
             self.assertEqual(len(second_label_rows), 2)
@@ -83,6 +105,48 @@ class YoloSegmentationDatasetExportTest(unittest.TestCase):
             self.assertIn("train: train/images", dataset_yaml)
             self.assertIn("val: val/images", dataset_yaml)
             self.assertIn("0: wound", dataset_yaml)
+
+    def test_appends_to_existing_dataset_with_next_split_specific_names(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw-mask-data"
+            dataset_dir = root / "dataset"
+            self._write_sample_raw_mask_data(raw_root)
+
+            for index in range(1, 6):
+                self._write_existing_dataset_item(dataset_dir, "train", f"train_img{index:05d}")
+            for index in range(1, 4):
+                self._write_existing_dataset_item(dataset_dir, "val", f"val_img{index:05d}")
+
+            stats = export_yolo_segmentation_dataset(
+                raw_mask_root=raw_root,
+                output_dir=dataset_dir,
+                train_ratio=0.8,
+                min_area_px=6,
+                approx_epsilon=1.0,
+            )
+
+            self.assertEqual(stats.exported_images, 4)
+            self.assertEqual(stats.train_images, 3)
+            self.assertEqual(stats.val_images, 1)
+
+            self.assertTrue((dataset_dir / "train" / "images" / "train_img00001.jpg").exists())
+            self.assertTrue((dataset_dir / "train" / "labels" / "train_img00001.txt").exists())
+            self.assertTrue((dataset_dir / "train" / "images" / "train_img00006.jpg").exists())
+            self.assertTrue((dataset_dir / "train" / "labels" / "train_img00006.txt").exists())
+            self.assertTrue((dataset_dir / "train" / "images" / "train_img00008.jpg").exists())
+            self.assertTrue((dataset_dir / "train" / "labels" / "train_img00008.txt").exists())
+            self.assertTrue((dataset_dir / "val" / "images" / "val_img00003.jpg").exists())
+            self.assertTrue((dataset_dir / "val" / "labels" / "val_img00003.txt").exists())
+            self.assertTrue((dataset_dir / "val" / "images" / "val_img00004.jpg").exists())
+            self.assertTrue((dataset_dir / "val" / "labels" / "val_img00004.txt").exists())
+
+            train_images = sorted((dataset_dir / "train" / "images").glob("*.jpg"))
+            val_images = sorted((dataset_dir / "val" / "images").glob("*.jpg"))
+            self.assertEqual(len(train_images), 8)
+            self.assertEqual(len(val_images), 4)
+            image_names = [path.name for path in train_images + val_images]
+            self.assertEqual(len(image_names), len(set(image_names)))
 
 
 if __name__ == "__main__":

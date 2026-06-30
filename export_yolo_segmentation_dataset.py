@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import math
-import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -39,7 +38,6 @@ class ExportStats:
 @dataclass(frozen=True)
 class ExportRecord:
     source_frame: Path
-    output_name: str
     width: int
     height: int
     polygons: List[List[Point]]
@@ -55,6 +53,7 @@ def export_yolo_segmentation_dataset(
     approx_epsilon: float = 2.0,
     wound_value: int = 1,
     image_quality: int = 95,
+    overwrite: bool = False,
 ) -> ExportStats:
     """Convert raw-mask-data frame/mask pairs into YOLO polygon dataset files."""
 
@@ -67,7 +66,6 @@ def export_yolo_segmentation_dataset(
 
     records: List[ExportRecord] = []
     skipped_masks = 0
-    output_index = 1
 
     for frame_path in _iter_frame_paths(frame_root):
         mask_path = mask_root / f"{frame_path.stem}.png"
@@ -89,13 +87,11 @@ def export_yolo_segmentation_dataset(
         records.append(
             ExportRecord(
                 source_frame=frame_path,
-                output_name=f"img{output_index}",
                 width=width,
                 height=height,
                 polygons=polygons,
             )
         )
-        output_index += 1
 
     if len(records) < 2:
         raise ValueError(
@@ -106,9 +102,24 @@ def export_yolo_segmentation_dataset(
     train_records = records[:train_count]
     val_records = records[train_count:]
 
-    _prepare_dataset_dir(dataset_root)
-    _write_records(dataset_root, "train", train_records, image_quality=image_quality)
-    _write_records(dataset_root, "val", val_records, image_quality=image_quality)
+    _prepare_dataset_dir(dataset_root, overwrite=overwrite)
+    train_start_index = _next_split_image_index(dataset_root, "train")
+    val_start_index = _next_split_image_index(dataset_root, "val")
+
+    _write_records(
+        dataset_root,
+        "train",
+        train_records,
+        image_quality=image_quality,
+        start_index=train_start_index,
+    )
+    _write_records(
+        dataset_root,
+        "val",
+        val_records,
+        image_quality=image_quality,
+        start_index=val_start_index,
+    )
     _write_dataset_yaml(dataset_root)
 
     validate_yolo_segmentation_dataset(dataset_root)
@@ -411,13 +422,32 @@ def _split_count(total: int, train_ratio: float) -> int:
     return min(max(train_count, 1), total - 1)
 
 
-def _prepare_dataset_dir(dataset_root: Path) -> None:
+def _prepare_dataset_dir(dataset_root: Path, overwrite: bool) -> None:
     for split in ("train", "val"):
         split_dir = dataset_root / split
-        if split_dir.exists():
-            shutil.rmtree(split_dir)
+        if overwrite and split_dir.exists():
+            for child in split_dir.rglob("*"):
+                if child.is_file():
+                    child.unlink()
         (split_dir / "images").mkdir(parents=True, exist_ok=True)
         (split_dir / "labels").mkdir(parents=True, exist_ok=True)
+
+
+def _next_split_image_index(dataset_root: Path, split: str) -> int:
+    images_dir = dataset_root / split / "images"
+    prefix = f"{split}_img"
+    max_index = 0
+    image_count = 0
+
+    for image_path in images_dir.glob("*.jpg"):
+        image_count += 1
+        stem = image_path.stem
+        if stem.startswith(prefix):
+            suffix = stem[len(prefix) :]
+            if suffix.isdigit():
+                max_index = max(max_index, int(suffix))
+
+    return max(max_index, image_count) + 1
 
 
 def _write_records(
@@ -425,13 +455,22 @@ def _write_records(
     split: str,
     records: Sequence[ExportRecord],
     image_quality: int,
+    start_index: int,
 ) -> None:
     images_dir = dataset_root / split / "images"
     labels_dir = dataset_root / split / "labels"
 
+    next_index = start_index
     for record in records:
-        image_path = images_dir / f"{record.output_name}.jpg"
-        label_path = labels_dir / f"{record.output_name}.txt"
+        output_name = f"{split}_img{next_index:05d}"
+        image_path = images_dir / f"{output_name}.jpg"
+        label_path = labels_dir / f"{output_name}.txt"
+        while image_path.exists() or label_path.exists():
+            next_index += 1
+            output_name = f"{split}_img{next_index:05d}"
+            image_path = images_dir / f"{output_name}.jpg"
+            label_path = labels_dir / f"{output_name}.txt"
+
         with Image.open(record.source_frame) as image:
             image.convert("RGB").save(image_path, format="JPEG", quality=image_quality)
 
@@ -440,6 +479,7 @@ def _write_records(
             coords = " ".join(f"{value:.6f}" for point in polygon for value in point)
             rows.append(f"0 {coords}")
         label_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+        next_index += 1
 
 
 def _write_dataset_yaml(dataset_root: Path) -> None:
@@ -486,6 +526,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--wound-value", type=int, default=1, help="Mask pixel value treated as wound")
     parser.add_argument("--image-quality", type=int, default=95, help="JPEG quality for exported images")
+    parser.add_argument(
+        "--overwrite",
+        action="store_true",
+        help="Clear existing train/val image and label files before exporting",
+    )
     return parser
 
 
@@ -501,6 +546,7 @@ def main() -> None:
         approx_epsilon=args.approx_epsilon,
         wound_value=args.wound_value,
         image_quality=args.image_quality,
+        overwrite=args.overwrite,
     )
 
 
