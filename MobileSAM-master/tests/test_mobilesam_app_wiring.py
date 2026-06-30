@@ -107,6 +107,25 @@ class MobileSAMAppWiringTest(unittest.TestCase):
         self.assertIn('predictor=sam2_runtime["predictor"]', function_block)
         self.assertIn('device=sam2_runtime["device"]', function_block)
 
+    def test_point_mode_uses_selected_cached_sam2_model(self):
+        app_source = APP_PATH.read_text(encoding="utf-8")
+
+        function_start = app_source.index("def segment_with_points(")
+        function_end = app_source.index("\n\ndef ensure_pil_image", function_start)
+        function_block = app_source[function_start:function_end]
+        click_start = app_source.index("segment_btn_p.click(")
+        click_end = app_source.index("    )", click_start)
+        click_block = app_source[click_start:click_end]
+
+        self.assertIn("sam2_model=DEFAULT_SAM2_MODEL", function_block)
+        self.assertIn("runtime = get_sam2_coordinate_runtime(sam2_model)", function_block)
+        self.assertIn('predictor = runtime["predictor"]', function_block)
+        self.assertIn("normalize_coords=True", function_block)
+        self.assertNotIn("get_mobile_sam_runtime()", function_block)
+        self.assertIn("point_sam2_model = gr.Dropdown", app_source)
+        self.assertIn("point_sam2_model.render()", app_source)
+        self.assertIn("point_sam2_model", click_block)
+
 
 if __name__ == "__main__":
     unittest.main()

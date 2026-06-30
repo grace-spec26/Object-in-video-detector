@@ -123,8 +123,11 @@ from mobilesam_coordinate_wrapper import (
 from sam2_coordinate_wrapper import (
     DEFAULT_SOURCE_COORDINATES_DIR,
     DEFAULT_SOURCE_FRAMES_DIR,
+    DEFAULT_SAM2_MODEL,
+    SAM2_MODEL_CHOICES,
     iter_sam2_coordinate_prompt_folder_steps,
     load_sam2_predictor,
+    resolve_sam2_model_option,
 )
 
 # Most of our demo code is from [FastSAM Demo](https://huggingface.co/spaces/An-619/FastSAM). Huge thanks for AN-619.
@@ -183,24 +186,30 @@ def get_mobile_sam_runtime():
 
 sam2_coordinate_runtime_lock = threading.Lock()
 sam2_coordinate_runtime = {
-    "device": None,
-    "predictor": None,
+    "runtimes": {},
 }
 
 
-def get_sam2_coordinate_runtime():
+def get_sam2_coordinate_runtime(sam2_model=DEFAULT_SAM2_MODEL):
+    model_option = resolve_sam2_model_option(sam2_model)
+    model_name = model_option["name"]
     with sam2_coordinate_runtime_lock:
-        if sam2_coordinate_runtime["predictor"] is not None:
-            return sam2_coordinate_runtime
+        runtime = sam2_coordinate_runtime["runtimes"].get(model_name)
+        if runtime is not None:
+            return runtime
 
-        predictor, device = load_sam2_predictor()
-        sam2_coordinate_runtime.update(
-            {
-                "device": device,
-                "predictor": predictor,
-            }
+        predictor, device = load_sam2_predictor(
+            model_name=model_name,
+            download_checkpoint=True,
         )
-        return sam2_coordinate_runtime
+        runtime = {
+            "device": device,
+            "model_name": model_name,
+            "model_label": model_option["label"],
+            "predictor": predictor,
+        }
+        sam2_coordinate_runtime["runtimes"][model_name] = runtime
+        return runtime
 
 # Description
 title = "<center><strong><font size='8'>Faster Segment Anything(MobileSAM)<font></strong></center>"
@@ -288,6 +297,7 @@ def segment_everything(
 def segment_with_points(
     image,
     original_image=None,
+    sam2_model=DEFAULT_SAM2_MODEL,
     input_size=1024,
     better_quality=False,
     withContours=True,
@@ -308,40 +318,42 @@ def segment_with_points(
         print("No points added")
         return image, image, "no points added"
 
-    runtime = get_mobile_sam_runtime()
-    torch = runtime["torch"]
+    runtime = get_sam2_coordinate_runtime(sam2_model)
     device = runtime["device"]
     predictor = runtime["predictor"]
 
-    print(point_coords, point_coords is not None)
-    print(point_labels, point_labels is not None)
+    print(
+        f"[SAM2 point mode] model={runtime['model_name']} device={device} "
+        f"points={point_coords.tolist()} labels={point_labels.tolist()}",
+        flush=True,
+    )
 
-    with torch.no_grad():
-        nd_image = np.array(image)
-        predictor.set_image(nd_image)
-        masks, scores, logits = predictor.predict(
-            point_coords=point_coords,
-            point_labels=point_labels,
-            multimask_output=len(point_coords) == 1,
-        )
-        annotations = np.array([masks[np.argmax(scores)]])
+    nd_image = np.array(image)
+    predictor.set_image(nd_image)
+    masks, scores, _ = predictor.predict(
+        point_coords=point_coords,
+        point_labels=point_labels,
+        multimask_output=len(point_coords) == 1,
+        normalize_coords=True,
+    )
+    annotations = np.array([masks[np.argmax(scores)]])
 
-        fig = render_annotations_with_fast_process(
-            annotations=annotations,
-            image=image,
-            device=device,
-            scale=1,
-            better_quality=better_quality,
-            mask_random_color=mask_random_color,
-            bbox=None,
-            use_retina=use_retina,
-            withContours=withContours,
-        )
+    fig = render_annotations_with_fast_process(
+        annotations=annotations,
+        image=image,
+        device=device,
+        scale=1,
+        better_quality=better_quality,
+        mask_random_color=mask_random_color,
+        bbox=None,
+        use_retina=use_retina,
+        withContours=withContours,
+    )
 
     global_points = []
     global_point_label = []
     # return fig, None
-    return fig, image, ""
+    return fig, image, f"Segmented with {runtime['model_label']} on {device}"
 
 
 def ensure_pil_image(image):
@@ -536,6 +548,7 @@ def get_coordinate_batch_outputs():
 def _run_coordinate_folder_batch_worker(
     frame_folder,
     coordinate_folder,
+    sam2_model,
     frame_step,
     padding_ratio,
     min_padding_px,
@@ -561,6 +574,7 @@ def _run_coordinate_folder_batch_worker(
         print(
             "[SAM2 coordinate folders] "
             f"frames_dir={frames_dir} coordinates_dir={coordinates_dir} "
+            f"sam2_model={sam2_model} "
             f"frame_step={frame_step} padding_ratio={padding_ratio} "
             f"min_padding_px={min_padding_px} min_negative_distance={min_negative_distance} "
             f"negative_mode={negative_mode}",
@@ -579,15 +593,16 @@ def _run_coordinate_folder_batch_worker(
                 f"negative_mode must be one of {', '.join(NEGATIVE_MODES)}, "
                 f"got {negative_mode_value!r}"
             )
+        model_option = resolve_sam2_model_option(sam2_model)
         set_coordinate_batch_state(
-            status="Loading SAM2 model (first run only)",
+            status=f"Loading {model_option['label']} (first run only)",
             progress_html=format_coordinate_progress_html(
                 1,
                 4,
-                "Loading SAM2 model (first run only)",
+                f"Loading {model_option['label']} (first run only)",
             ),
         )
-        sam2_runtime = get_sam2_coordinate_runtime()
+        sam2_runtime = get_sam2_coordinate_runtime(model_option["name"])
         set_coordinate_batch_state(
             status="Scanning input folders",
             progress_html=format_coordinate_progress_html(0, 1, "Scanning input folders"),
@@ -621,6 +636,7 @@ def _run_coordinate_folder_batch_worker(
                 final_result = result
                 status = (
                     "Processed with SAM2 "
+                    f"model {sam2_runtime['model_label']} | "
                     f"{result['processed_frames']} frame(s). "
                     f"Source frames: {result['source_frames_dir']} | "
                     f"Output frames: {result['frames_dir']} | "
@@ -654,6 +670,7 @@ def _run_coordinate_folder_batch_worker(
 def start_coordinate_folder_batch(
     frame_folder,
     coordinate_folder,
+    sam2_model,
     frame_step,
     padding_ratio,
     min_padding_px,
@@ -681,6 +698,7 @@ def start_coordinate_folder_batch(
         args=(
             frame_folder,
             coordinate_folder,
+            sam2_model,
             frame_step,
             padding_ratio,
             min_padding_px,
@@ -807,6 +825,16 @@ batch_frame_folder = gr.Textbox(
 batch_coordinate_folder = gr.Textbox(
     label="Coordinate folder",
     value=str(DEFAULT_SOURCE_COORDINATES_DIR),
+)
+batch_sam2_model = gr.Dropdown(
+    choices=list(SAM2_MODEL_CHOICES),
+    value=DEFAULT_SAM2_MODEL,
+    label="SAM2 model",
+)
+point_sam2_model = gr.Dropdown(
+    choices=list(SAM2_MODEL_CHOICES),
+    value=DEFAULT_SAM2_MODEL,
+    label="SAM2 model",
 )
 batch_frame_step = gr.Number(label="frame_step", value=3)
 batch_negative_mode = gr.Dropdown(
@@ -941,6 +969,7 @@ with gr.Blocks(
                     )
 
                     with gr.Column():
+                        point_sam2_model.render()
                         segment_btn_p = gr.Button(
                             "Start segmenting!", variant="primary"
                         )
@@ -959,6 +988,7 @@ with gr.Blocks(
                 batch_frame_folder.render()
                 batch_coordinate_folder.render()
             with gr.Column():
+                batch_sam2_model.render()
                 batch_frame_step.render()
                 batch_negative_mode.render()
                 batch_padding_ratio.render()
@@ -1006,7 +1036,7 @@ with gr.Blocks(
 
     segment_btn_p.click(
         segment_with_points,
-        inputs=[cond_img_p, original_img_p],
+        inputs=[cond_img_p, original_img_p, point_sam2_model],
         outputs=[segm_img_p, cond_img_p, status_text_p],
     )
     batch_process_btn.click(
@@ -1014,6 +1044,7 @@ with gr.Blocks(
         inputs=[
             batch_frame_folder,
             batch_coordinate_folder,
+            batch_sam2_model,
             batch_frame_step,
             batch_padding_ratio,
             batch_min_padding_px,
