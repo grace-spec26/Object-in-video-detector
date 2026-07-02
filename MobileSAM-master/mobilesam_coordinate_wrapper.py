@@ -15,11 +15,13 @@ SUPPORTED_FRAME_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 NEGATIVE_MODE_BOX_4_CORNERS = "box_4_corners"
 NEGATIVE_MODE_BOX_8_POINTS = "box_8_points"
 NEGATIVE_MODE_ORIENTED_SIDE_POINTS = "oriented_side_points"
+NEGATIVE_MODE_BOX_8_ORIENTED = "box_8_oriented"
 NEGATIVE_MODE_NONE = "none"
 NEGATIVE_MODES = (
     NEGATIVE_MODE_BOX_4_CORNERS,
     NEGATIVE_MODE_BOX_8_POINTS,
     NEGATIVE_MODE_ORIENTED_SIDE_POINTS,
+    NEGATIVE_MODE_BOX_8_ORIENTED,
     NEGATIVE_MODE_NONE,
 )
 DEFAULT_NEGATIVE_MODE = NEGATIVE_MODE_BOX_8_POINTS
@@ -436,6 +438,32 @@ def generate_expanded_box_negative_points(
             min_padding_px=min_padding_px,
             min_negative_distance=min_negative_distance,
         )
+        return _filter_negative_points_by_distance(
+            negative_points=negative_points,
+            positive_points=positives,
+            min_negative_distance=min_negative_distance,
+        )
+
+    if negative_mode == NEGATIVE_MODE_BOX_8_ORIENTED:
+        box = compute_expanded_prompt_box(
+            positives,
+            image_width=image_width,
+            image_height=image_height,
+            padding_ratio=padding_ratio,
+            min_padding_px=min_padding_px,
+        )
+        box_points = _negative_candidates_from_box(
+            box,
+            negative_mode=NEGATIVE_MODE_BOX_8_POINTS,
+        )
+        oriented_points = _negative_candidates_from_oriented_side_points(
+            positive_points=positives,
+            image_width=image_width,
+            image_height=image_height,
+            min_padding_px=min_padding_px,
+            min_negative_distance=min_negative_distance,
+        )
+        negative_points = np.concatenate([box_points, oriented_points], axis=0)
         return _filter_negative_points_by_distance(
             negative_points=negative_points,
             positive_points=positives,

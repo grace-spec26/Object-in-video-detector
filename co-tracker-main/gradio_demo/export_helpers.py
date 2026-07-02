@@ -1,6 +1,6 @@
 import json
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import cv2
 import numpy as np
@@ -9,6 +9,8 @@ import numpy as np
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FRAMES_DIR = PROJECT_ROOT / "data" / "frames"
 DEFAULT_COORDINATES_DIR = PROJECT_ROOT / "data" / "coordinates"
+POSITIVE_POINT_LABEL = 1
+NEGATIVE_POINT_LABEL = 0
 
 
 def _clear_matching_files(output_dir: Path, patterns: Iterable[str]) -> None:
@@ -78,14 +80,92 @@ def scale_tracks_to_frame_space(
     return scaled
 
 
+def normalize_point_labels(point_labels: Optional[Sequence[int]], point_count: int) -> np.ndarray:
+    """Return one SAM prompt label per selected track."""
+    if point_count < 0:
+        raise ValueError("point_count must be non-negative.")
+    if point_labels is None:
+        return np.ones((point_count,), dtype=np.int32)
+
+    labels = np.asarray(point_labels, dtype=np.int32).reshape(-1)
+    if len(labels) != point_count:
+        raise ValueError("point_labels length must match the number of tracks.")
+    if not np.isin(labels, [NEGATIVE_POINT_LABEL, POSITIVE_POINT_LABEL]).all():
+        raise ValueError("point_labels must contain only 1 for positive and 0 for negative points.")
+    return labels
+
+
+def visible_labeled_points_for_frame(
+    tracks: np.ndarray,
+    frame_index: int,
+    point_labels: Optional[Sequence[int]] = None,
+    visibility: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return visible point coordinates and SAM labels for one frame."""
+    tracks_array = np.asarray(tracks, dtype=np.float32)
+    if tracks_array.ndim != 3 or tracks_array.shape[-1] != 2:
+        raise ValueError("Tracks must have shape (N, T, 2).")
+
+    point_count, frame_count = tracks_array.shape[:2]
+    if frame_count <= 0:
+        raise ValueError("Tracks must contain at least one frame.")
+
+    labels = normalize_point_labels(point_labels, point_count)
+    frame_index = int(np.clip(int(frame_index), 0, frame_count - 1))
+
+    visible_mask = np.ones((point_count,), dtype=bool)
+    if visibility is not None:
+        visibility_array = np.asarray(visibility, dtype=bool)
+        if visibility_array.shape != tracks_array.shape[:2]:
+            raise ValueError("Visibility must have shape (N, T) to match tracks.")
+        visible_mask = visibility_array[:, frame_index]
+
+    return tracks_array[:, frame_index, :][visible_mask], labels[visible_mask]
+
+
+def build_sam_point_prompt_payload(
+    point_coords: np.ndarray,
+    point_labels: Sequence[int],
+    image_size: Optional[Sequence[int]] = None,
+    class_id: int = 1,
+) -> Dict[str, object]:
+    """Build the SAM-friendly JSON object used by MobileSAM/SAM2 wrappers."""
+    coords = np.asarray(point_coords, dtype=np.float32)
+    if coords.size == 0:
+        coords = np.empty((0, 2), dtype=np.float32)
+    if coords.ndim != 2 or coords.shape[-1] != 2:
+        raise ValueError("point_coords must have shape (N, 2).")
+
+    labels = normalize_point_labels(point_labels, len(coords))
+    positives = coords[labels == POSITIVE_POINT_LABEL]
+    negatives = coords[labels == NEGATIVE_POINT_LABEL]
+
+    payload: Dict[str, object] = {
+        "objects": [
+            {
+                "class_id": int(class_id),
+                "positive_points": positives.tolist(),
+                "negative_points": negatives.tolist(),
+                "point_coords": coords.tolist(),
+                "point_labels": [int(label) for label in labels.tolist()],
+            }
+        ]
+    }
+    if image_size is not None:
+        height, width = [int(value) for value in image_size]
+        payload["image_size"] = {"width": width, "height": height}
+    return payload
+
+
 def store_coordinate_arrays(
     tracks: np.ndarray,
     output_dir: Path = DEFAULT_COORDINATES_DIR,
     source_hw: Optional[Sequence[int]] = None,
     target_hw: Optional[Sequence[int]] = None,
     visibility: Optional[np.ndarray] = None,
+    point_labels: Optional[Sequence[int]] = None,
 ) -> List[Path]:
-    """Store selected-point tracks as per-frame JSON arrays of [x, y] pixels."""
+    """Store selected-point tracks as per-frame JSON arrays or SAM prompt objects."""
     output_dir = Path(output_dir)
     _clear_matching_files(output_dir, ("frame_*.json", "coordinates.json"))
 
@@ -95,21 +175,43 @@ def store_coordinate_arrays(
     elif tracks_array.ndim != 3 or tracks_array.shape[-1] != 2:
         raise ValueError("Tracks must have shape (N, T, 2).")
 
-    visibility_array = None
     if visibility is not None:
         visibility_array = np.asarray(visibility, dtype=bool)
         if visibility_array.shape != tracks_array.shape[:2]:
             raise ValueError("Visibility must have shape (N, T) to match tracks.")
+    else:
+        visibility_array = None
+
+    labels_array = None
+    if point_labels is not None:
+        labels_array = normalize_point_labels(point_labels, tracks_array.shape[0])
 
     tracks_by_frame = np.transpose(tracks_array, (1, 0, 2))
-    if visibility_array is None:
+    if visibility_array is None and labels_array is None:
         all_coordinates = tracks_by_frame.tolist()
-    else:
+    elif labels_array is None:
         visibility_by_frame = np.transpose(visibility_array, (1, 0))
         all_coordinates = [
             frame_tracks[frame_visibility].tolist()
             for frame_tracks, frame_visibility in zip(tracks_by_frame, visibility_by_frame)
         ]
+    else:
+        image_size = target_hw if target_hw is not None else source_hw
+        all_coordinates = []
+        for frame_index in range(tracks_array.shape[1]):
+            frame_tracks, frame_labels = visible_labeled_points_for_frame(
+                tracks_array,
+                frame_index,
+                point_labels=labels_array,
+                visibility=visibility_array,
+            )
+            frame_payload = build_sam_point_prompt_payload(
+                frame_tracks,
+                frame_labels,
+                image_size=image_size,
+            )
+            frame_payload["frame_index"] = frame_index
+            all_coordinates.append(frame_payload)
 
     written_paths: List[Path] = []
     for frame_index, frame_coordinates in enumerate(all_coordinates):
@@ -118,6 +220,12 @@ def store_coordinate_arrays(
         written_paths.append(coordinate_path)
 
     aggregate_path = output_dir / "coordinates.json"
-    aggregate_path.write_text(json.dumps(all_coordinates, indent=2), encoding="utf-8")
+    aggregate_payload = all_coordinates
+    if labels_array is not None:
+        aggregate_payload = {
+            "format": "sam_point_prompts",
+            "frames": all_coordinates,
+        }
+    aggregate_path.write_text(json.dumps(aggregate_payload, indent=2), encoding="utf-8")
     written_paths.append(aggregate_path)
     return written_paths

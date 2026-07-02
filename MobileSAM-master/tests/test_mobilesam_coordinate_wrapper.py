@@ -11,8 +11,10 @@ from PIL import Image
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from mobilesam_coordinate_wrapper import (  # noqa: E402
+    NEGATIVE_MODES,
     build_augmented_prompt_json,
     format_coordinate_progress_html,
+    generate_expanded_box_negative_points,
     iter_coordinate_prompt_folder_steps,
     prepare_coordinate_prompt_json,
     run_mobilesam_for_frame,
@@ -150,6 +152,55 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             ],
             rtol=1e-5,
             atol=1e-5,
+        )
+
+    def test_box_8_oriented_combines_box_8_and_oriented_side_negatives(self):
+        positive_points = np.asarray(
+            [[20.0, 20.0], [40.0, 40.0], [60.0, 60.0]],
+            dtype=np.float32,
+        )
+
+        prompt = build_augmented_prompt_json(
+            positive_points=positive_points,
+            image_width=100,
+            image_height=100,
+            padding_ratio=0.15,
+            min_padding_px=10,
+            min_negative_distance=0,
+            negative_mode="box_8_oriented",
+        )
+        box_8_negatives = generate_expanded_box_negative_points(
+            positive_points,
+            image_width=100,
+            image_height=100,
+            padding_ratio=0.15,
+            min_padding_px=10,
+            min_negative_distance=0,
+            negative_mode="box_8_points",
+        )
+        oriented_negatives = generate_expanded_box_negative_points(
+            positive_points,
+            image_width=100,
+            image_height=100,
+            padding_ratio=0.15,
+            min_padding_px=10,
+            min_negative_distance=0,
+            negative_mode="oriented_side_points",
+        )
+
+        obj = prompt["objects"][0]
+        self.assertIn("box_8_oriented", NEGATIVE_MODES)
+        self.assertEqual(prompt["negative_mode"], "box_8_oriented")
+        self.assertEqual(obj["negative_mode"], "box_8_oriented")
+        np.testing.assert_allclose(
+            obj["negative_points"],
+            np.concatenate([box_8_negatives, oriented_negatives], axis=0),
+            rtol=1e-5,
+            atol=1e-5,
+        )
+        self.assertEqual(
+            obj["point_labels"],
+            [1, 1, 1] + [0] * (len(box_8_negatives) + len(oriented_negatives)),
         )
 
     def test_prepare_coordinate_prompt_json_does_not_overwrite_source(self):

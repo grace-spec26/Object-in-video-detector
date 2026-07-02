@@ -9,7 +9,9 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
 import sys
+import threading
 import uuid
+from pathlib import Path
 
 import gradio as gr
 from gradio import data_classes as gradio_data_classes
@@ -29,8 +31,10 @@ try:
     from .export_helpers import (
         DEFAULT_COORDINATES_DIR,
         DEFAULT_FRAMES_DIR,
+        scale_tracks_to_frame_space,
         store_coordinate_arrays,
         store_original_frames,
+        visible_labeled_points_for_frame,
     )
     from .tracking_helpers import (
         DEFAULT_TRACKING_RESOLUTION,
@@ -49,8 +53,10 @@ except ImportError:
     from export_helpers import (
         DEFAULT_COORDINATES_DIR,
         DEFAULT_FRAMES_DIR,
+        scale_tracks_to_frame_space,
         store_coordinate_arrays,
         store_original_frames,
+        visible_labeled_points_for_frame,
     )
     from tracking_helpers import (
         DEFAULT_TRACKING_RESOLUTION,
@@ -240,25 +246,85 @@ def paint_point_track(
 PREVIEW_WIDTH = 768 # Width of the preview video
 POINT_SIZE = 4 # Size of the query point in the preview video
 DEFAULT_MAX_FRAMES = parse_max_frame_count(os.environ.get("COTRACKER_MAX_FRAMES", "0"))
+POSITIVE_POINT_CHOICE = "Positive (+)"
+NEGATIVE_POINT_CHOICE = "Negative (-)"
+POINT_TYPE_CHOICES = (POSITIVE_POINT_CHOICE, NEGATIVE_POINT_CHOICE)
+POINT_LABEL_BY_CHOICE = {
+    POSITIVE_POINT_CHOICE: 1,
+    NEGATIVE_POINT_CHOICE: 0,
+}
+POINT_COLORS = {
+    1: (0, 255, 0),
+    0: (255, 0, 0),
+}
+SAM_IMAGE_MODEL_CHOICES = (
+    "sam2.1_hiera_tiny.pt",
+    "sam2.1_hiera_small.pt",
+    "sam2.1_hiera_base_plus.pt",
+    "sam2.1_hiera_large.pt",
+)
+DEFAULT_SAM_IMAGE_MODEL = "sam2.1_hiera_small.pt"
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+MOBILE_SAM_ROOT = PROJECT_ROOT / "MobileSAM-master"
+sam_preview_runtime_lock = threading.Lock()
+sam_preview_runtimes = {}
 
 
-def get_point(frame_num, video_queried_preview, query_points, query_points_color, query_count, evt: gr.SelectData):
+def point_label_from_choice(point_type):
+    return POINT_LABEL_BY_CHOICE.get(str(point_type), 1)
+
+
+def unpack_query_point(point):
+    x, y, frame_index = point[:3]
+    point_label = int(point[3]) if len(point) >= 4 else 1
+    return x, y, frame_index, point_label
+
+
+def flatten_query_point_labels(query_points):
+    labels = []
+    for frame_points in query_points:
+        for point in frame_points:
+            _, _, _, point_label = unpack_query_point(point)
+            labels.append(point_label)
+    return labels
+
+
+def draw_query_point(frame, x, y, point_label):
+    point_text = "+" if int(point_label) == 1 else "-"
+    point_color = POINT_COLORS.get(int(point_label), POINT_COLORS[1])
+    x, y = int(round(x)), int(round(y))
+    frame = cv2.circle(frame, (x, y), POINT_SIZE + 3, point_color, -1)
+    frame = cv2.circle(frame, (x, y), POINT_SIZE + 3, (255, 255, 255), 1)
+    frame = cv2.putText(
+        frame,
+        point_text,
+        (x - POINT_SIZE, y + POINT_SIZE),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.35,
+        (0, 0, 0),
+        1,
+        cv2.LINE_AA,
+    )
+    return frame
+
+
+def get_point(frame_num, point_type, video_queried_preview, query_points, query_points_color, query_count, evt: gr.SelectData):
     print(f"You selected {(evt.index[0], evt.index[1], frame_num)}")
 
     current_frame = video_queried_preview[int(frame_num)]
 
     # Get the mouse click
-    query_points[int(frame_num)].append((evt.index[0], evt.index[1], frame_num))
+    point_label = point_label_from_choice(point_type)
+    query_points[int(frame_num)].append((evt.index[0], evt.index[1], frame_num, point_label))
 
     # Choose the color for the point from matplotlib colormap
-    color = matplotlib.colormaps.get_cmap("gist_rainbow")(query_count % 20 / 20)
-    color = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+    color = POINT_COLORS[point_label]
     # print(f"Color: {color}")
     query_points_color[int(frame_num)].append(color)
 
     # Draw the point on the frame
     x, y = evt.index
-    current_frame_draw = cv2.circle(current_frame, (x, y), POINT_SIZE, color, -1)
+    current_frame_draw = draw_query_point(current_frame, x, y, point_label)
 
     # Update the frame
     video_queried_preview[int(frame_num)] = current_frame_draw
@@ -291,8 +357,8 @@ def undo_point(frame_num, video_preview, video_queried_preview, query_points, qu
     # Redraw the frame
     current_frame_draw = video_preview[int(frame_num)].copy()
     for point, color in zip(query_points[int(frame_num)], query_points_color[int(frame_num)]):
-        x, y, _ = point
-        current_frame_draw = cv2.circle(current_frame_draw, (x, y), POINT_SIZE, color, -1)
+        x, y, _, point_label = unpack_query_point(point)
+        current_frame_draw = draw_query_point(current_frame_draw, x, y, point_label)
 
     # Update the query count
     query_count -= 1
@@ -401,8 +467,12 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames):
         gr.update(interactive=True),
         None,
         None,
+        None,
         gr.update(interactive=False),
         gr.update(interactive=False),
+        gr.update(interactive=False),
+        gr.update(interactive=False),
+        None,
         load_status,
     )
 
@@ -429,14 +499,17 @@ def track(
     # Convert query points to tensor, normalize to input resolution
     if tracking_mode!='grid':
         query_points_tensor = []
+        selected_point_labels = []
         for frame_points in query_points:
-            for x, y, frame_index in frame_points:
+            for point in frame_points:
+                x, y, frame_index, point_label = unpack_query_point(point)
                 sampled_frame_index = map_frame_index_to_sampled(
                     frame_index,
                     sampled_frame_count=sampled_frame_count,
                     stride=TRACKING_FRAME_STRIDE,
                 )
                 query_points_tensor.append((x, y, sampled_frame_index))
+                selected_point_labels.append(point_label)
         
         query_points_tensor = torch.tensor(query_points_tensor).float()
         query_points_tensor *= torch.tensor([
@@ -465,6 +538,7 @@ def track(
             color = cmap(i / float(query_count))
             color = (int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
             query_points_color[0].append(color)
+        selected_point_labels = None
 
     else:
         queries = query_points_tensor
@@ -519,7 +593,10 @@ def track(
         video_file_path,
         tracks if has_selected_points else None,
         pred_occ if has_selected_points else None,
+        selected_point_labels if has_selected_points else None,
         gr.update(interactive=True),
+        gr.update(interactive=has_selected_points),
+        gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
         export_status,
     )
@@ -541,7 +618,7 @@ def store_frames_from_state(video_frames):
     return f"Stored {len(written_paths)} original frames in {DEFAULT_FRAMES_DIR}."
 
 
-def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks, selected_visibility):
+def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks, selected_visibility, selected_point_labels):
     if selected_tracks is None:
         message = "Track selected points before storing coordinates."
         gr.Warning(message, duration=5)
@@ -558,6 +635,7 @@ def store_coordinates_from_state(video_frames, video_preview_array, selected_tra
             source_hw=video_preview_array.shape[1:3],
             target_hw=video_frames.shape[1:3],
             visibility=selected_visibility,
+            point_labels=selected_point_labels,
         )
     except Exception as exc:
         message = f"Failed to store coordinates: {exc}"
@@ -568,6 +646,129 @@ def store_coordinates_from_state(video_frames, video_preview_array, selected_tra
     return (
         f"Stored selected-point coordinates for {frame_files} frames in "
         f"{DEFAULT_COORDINATES_DIR}."
+    )
+
+
+def get_sam_preview_runtime(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    if model_name not in SAM_IMAGE_MODEL_CHOICES:
+        allowed = ", ".join(SAM_IMAGE_MODEL_CHOICES)
+        raise ValueError(f"SAM image model must be one of: {allowed}")
+
+    with sam_preview_runtime_lock:
+        runtime = sam_preview_runtimes.get(model_name)
+        if runtime is not None:
+            return runtime
+
+        if str(MOBILE_SAM_ROOT) not in sys.path:
+            sys.path.insert(0, str(MOBILE_SAM_ROOT))
+
+        from sam2_coordinate_wrapper import load_sam2_predictor, resolve_sam2_model_option
+
+        model_option = resolve_sam2_model_option(model_name)
+        predictor, device = load_sam2_predictor(
+            model_name=model_name,
+            download_checkpoint=True,
+        )
+        runtime = {
+            "predictor": predictor,
+            "device": device,
+            "model_name": model_name,
+            "model_label": model_option["label"],
+        }
+        sam_preview_runtimes[model_name] = runtime
+        return runtime
+
+
+def as_uint8_rgb_frame(frame):
+    image = np.asarray(frame)
+    if image.ndim != 3 or image.shape[-1] not in (3, 4):
+        raise ValueError("Expected an RGB/RGBA frame for SAM preview.")
+    if image.shape[-1] == 4:
+        image = image[..., :3]
+    if image.dtype != np.uint8:
+        if np.issubdtype(image.dtype, np.floating) and image.max(initial=0) <= 1.0:
+            image = image * 255
+        image = np.clip(image, 0, 255).astype(np.uint8)
+    return image.copy()
+
+
+def draw_sam_preview(frame, mask, point_coords, point_labels):
+    preview = as_uint8_rgb_frame(frame)
+    mask_array = np.asarray(mask).astype(bool)
+    if mask_array.shape != preview.shape[:2]:
+        raise ValueError("SAM mask size does not match frame size.")
+
+    overlay_color = np.asarray([0, 180, 255], dtype=np.float32)
+    preview_float = preview.astype(np.float32)
+    preview_float[mask_array] = preview_float[mask_array] * 0.55 + overlay_color * 0.45
+    preview = np.clip(preview_float, 0, 255).astype(np.uint8)
+
+    height, width = preview.shape[:2]
+    for (x, y), label in zip(np.asarray(point_coords), np.asarray(point_labels)):
+        x = int(np.clip(round(float(x)), 0, width - 1))
+        y = int(np.clip(round(float(y)), 0, height - 1))
+        preview = draw_query_point(preview, x, y, int(label))
+    return preview
+
+
+def preview_sam_on_frame(
+    video_frames,
+    video_preview_array,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    frame_num,
+    sam_model,
+):
+    if selected_tracks is None or selected_point_labels is None:
+        message = "Track selected positive/negative points before previewing SAM."
+        gr.Warning(message, duration=5)
+        return None, message
+    if video_frames is None or video_preview_array is None:
+        message = "Submit a video before previewing SAM."
+        gr.Warning(message, duration=5)
+        return None, message
+
+    frame_index = int(np.clip(int(frame_num), 0, len(video_frames) - 1))
+    scaled_tracks = scale_tracks_to_frame_space(
+        selected_tracks,
+        source_hw=video_preview_array.shape[1:3],
+        target_hw=video_frames.shape[1:3],
+    )
+    point_coords, point_labels = visible_labeled_points_for_frame(
+        scaled_tracks,
+        frame_index,
+        point_labels=selected_point_labels,
+        visibility=selected_visibility,
+    )
+    if len(point_coords) == 0:
+        message = f"No visible tracked points on frame {frame_index}."
+        gr.Warning(message, duration=5)
+        return as_uint8_rgb_frame(video_frames[frame_index]), message
+    if not np.any(point_labels == 1):
+        message = f"SAM needs at least one visible positive point on frame {frame_index}."
+        gr.Warning(message, duration=5)
+        return as_uint8_rgb_frame(video_frames[frame_index]), message
+
+    runtime = get_sam_preview_runtime(sam_model)
+    predictor = runtime["predictor"]
+    frame = as_uint8_rgb_frame(video_frames[frame_index])
+    predictor.set_image(frame)
+    masks, scores, _ = predictor.predict(
+        point_coords=point_coords.astype(np.float32),
+        point_labels=point_labels.astype(np.int32),
+        multimask_output=len(point_coords) == 1,
+        normalize_coords=True,
+    )
+    best_mask = masks[int(np.argmax(scores))]
+    preview = draw_sam_preview(frame, best_mask, point_coords, point_labels)
+    positive_count = int(np.sum(point_labels == 1))
+    negative_count = int(np.sum(point_labels == 0))
+    return (
+        preview,
+        f"SAM preview frame {frame_index} with {runtime['model_label']} on {runtime['device']} "
+        f"({positive_count} positive, {negative_count} negative point(s)).",
     )
 
 
@@ -584,6 +785,7 @@ with gr.Blocks() as demo:
     query_count = gr.State(0)
     selected_tracks = gr.State(None)
     selected_visibility = gr.State(None)
+    selected_point_labels = gr.State(None)
 
     gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
     gr.Markdown("<div style='text-align: left;'> \
@@ -643,6 +845,13 @@ with gr.Blocks() as demo:
                 query_frames = gr.Slider(
                     minimum=0, maximum=100, value=0, step=1, label="Choose Frame", interactive=False)
             with gr.Row():
+                point_type = gr.Radio(
+                    choices=list(POINT_TYPE_CHOICES),
+                    value=POSITIVE_POINT_CHOICE,
+                    label="Point Type",
+                    interactive=True,
+                )
+            with gr.Row():
                 undo = gr.Button("Undo", interactive=False)
                 clear_frame = gr.Button("Clear Frame", interactive=False)
                 clear_all = gr.Button("Clear All", interactive=False)
@@ -675,6 +884,19 @@ with gr.Blocks() as demo:
                 interactive=False,
                 lines=3,
             )
+            with gr.Row():
+                sam_model_dropdown = gr.Dropdown(
+                    choices=list(SAM_IMAGE_MODEL_CHOICES),
+                    value=DEFAULT_SAM_IMAGE_MODEL,
+                    label="SAM Image Model",
+                    interactive=False,
+                )
+                sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
+            sam_preview_image = gr.Image(
+                label="SAM Point Preview",
+                type="numpy",
+                interactive=False,
+            )
 
     
 
@@ -700,8 +922,12 @@ with gr.Blocks() as demo:
             track_button,
             selected_tracks,
             selected_visibility,
+            selected_point_labels,
             store_frames_button,
             store_coordinates_button,
+            sam_model_dropdown,
+            sam_preview_button,
+            sam_preview_image,
             export_status,
         ],
         queue = False
@@ -720,6 +946,7 @@ with gr.Blocks() as demo:
         fn = get_point, 
         inputs = [
             query_frames,
+            point_type,
             video_queried_preview,
             query_points,
             query_points_color,
@@ -806,8 +1033,11 @@ with gr.Blocks() as demo:
             output_video,
             selected_tracks,
             selected_visibility,
+            selected_point_labels,
             store_frames_button,
             store_coordinates_button,
+            sam_model_dropdown,
+            sam_preview_button,
             export_status,
         ],
         queue = False,
@@ -831,8 +1061,27 @@ with gr.Blocks() as demo:
             video_preview,
             selected_tracks,
             selected_visibility,
+            selected_point_labels,
         ],
         outputs = [
+            export_status,
+        ],
+        queue = False,
+    )
+
+    sam_preview_button.click(
+        fn = preview_sam_on_frame,
+        inputs = [
+            video,
+            video_preview,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            query_frames,
+            sam_model_dropdown,
+        ],
+        outputs = [
+            sam_preview_image,
             export_status,
         ],
         queue = False,
