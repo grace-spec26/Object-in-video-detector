@@ -50,6 +50,15 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertIn("selected_point_labels", match.group(1))
 
+    def test_clicked_point_marker_uses_compact_prompt_dot(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"def draw_query_point\(.*?\n\n", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("POINT_PROMPT_RADIUS", match.group(0))
+        self.assertNotIn("POINT_SIZE + 3", match.group(0))
+        self.assertNotIn("cv2.putText", match.group(0))
+
 
 if __name__ == "__main__":
     unittest.main()

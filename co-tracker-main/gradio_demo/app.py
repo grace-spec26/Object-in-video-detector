@@ -246,7 +246,7 @@ def paint_point_track(
 
 
 PREVIEW_WIDTH = 768 # Width of the preview video
-POINT_SIZE = 4 # Size of the query point in the preview video
+POINT_PROMPT_RADIUS = 3
 DEFAULT_MAX_FRAMES = parse_max_frame_count(os.environ.get("COTRACKER_MAX_FRAMES", "0"))
 POSITIVE_POINT_CHOICE = "Positive (+)"
 NEGATIVE_POINT_CHOICE = "Negative (-)"
@@ -292,21 +292,10 @@ def flatten_query_point_labels(query_points):
 
 
 def draw_query_point(frame, x, y, point_label):
-    point_text = "+" if int(point_label) == 1 else "-"
     point_color = POINT_COLORS.get(int(point_label), POINT_COLORS[1])
     x, y = int(round(x)), int(round(y))
-    frame = cv2.circle(frame, (x, y), POINT_SIZE + 3, point_color, -1)
-    frame = cv2.circle(frame, (x, y), POINT_SIZE + 3, (255, 255, 255), 1)
-    frame = cv2.putText(
-        frame,
-        point_text,
-        (x - POINT_SIZE, y + POINT_SIZE),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.35,
-        (0, 0, 0),
-        1,
-        cv2.LINE_AA,
-    )
+    frame = cv2.circle(frame, (x, y), POINT_PROMPT_RADIUS, point_color, -1)
+    frame = cv2.circle(frame, (x, y), POINT_PROMPT_RADIUS, (255, 255, 255), 1)
     return frame
 
 
