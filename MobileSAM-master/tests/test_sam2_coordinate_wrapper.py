@@ -259,24 +259,15 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
             )
             self.assertEqual(
                 processed_json["objects"][0]["negative_points"],
-                [
-                    [20.0, 20.0],
-                    [80.0, 20.0],
-                    [80.0, 80.0],
-                    [20.0, 80.0],
-                    [50.0, 20.0],
-                    [80.0, 50.0],
-                    [50.0, 80.0],
-                    [20.0, 50.0],
-                ],
+                [[4.0, 4.0]],
             )
             self.assertEqual(
                 processed_json["objects"][0]["point_labels"],
-                [1, 1, 0, 0, 0, 0, 0, 0, 0, 0],
+                [1, 1, 0],
             )
             self.assertEqual(processed_json["negative_mode"], "box_8_points")
-            self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0, 0, 0, 0, 0, 0, 0, 0])
-            self.assertEqual(predictor.calls[0]["box"], [20.0, 20.0, 80.0, 80.0])
+            self.assertEqual(predictor.calls[0]["labels"], [1, 1, 0])
+            self.assertIsNone(predictor.calls[0]["box"])
 
     def test_select_frames_for_frame_step_skips_first_and_last_five_before_direct_step(self):
         frame_paths = [Path(f"frame_{index:06d}.png") for index in range(20)]

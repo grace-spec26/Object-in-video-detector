@@ -140,6 +140,8 @@ def _labels_for_coords(labels: Any, coords: np.ndarray, source: Path) -> np.ndar
     label_array = np.asarray(labels, dtype=np.int32)
     if label_array.ndim != 1 or len(label_array) != len(coords):
         raise ValueError(f"point_labels length does not match point_coords in {source}")
+    if not np.isin(label_array, [0, 1]).all():
+        raise ValueError(f"point_labels must contain only 1 for positive and 0 for negative points in {source}")
     return label_array
 
 
@@ -234,6 +236,181 @@ def _extract_positive_point_sets(
             return [(coords, int(data.get("class_id", 1)))]
 
     raise ValueError(f"Unsupported coordinate JSON format in {source}")
+
+
+def _prompt_from_provided_coords(
+    coords: np.ndarray,
+    labels: np.ndarray,
+    class_id: int,
+    source: Path,
+    image_width: int,
+    image_height: int,
+    box: Optional[Any] = None,
+) -> Tuple[Dict[str, Any], PromptObject]:
+    coords = _clamp_points(coords, image_width=image_width, image_height=image_height)
+    labels = _labels_for_coords(labels, coords, source)
+    positives = coords[labels == 1]
+    negatives = coords[labels == 0]
+    if len(positives) == 0:
+        raise ValueError(f"No positive points found in {source}")
+
+    prompt_box = None
+    prompt_json = {
+        "class_id": int(class_id),
+        "positive_points": _json_ready_points(positives),
+        "negative_points": _json_ready_points(negatives),
+        "point_coords": _json_ready_points(coords),
+        "point_labels": [int(label) for label in labels.tolist()],
+    }
+    if box is not None:
+        prompt_box = _clamp_box(box, image_width=image_width, image_height=image_height)
+        prompt_json["box"] = [float(value) for value in prompt_box.tolist()]
+    return prompt_json, (coords, labels, int(class_id), prompt_box)
+
+
+def _provided_prompt_from_object(
+    obj: Dict[str, Any],
+    source: Path,
+    image_width: int,
+    image_height: int,
+    visible_only: bool,
+) -> Optional[Tuple[Dict[str, Any], PromptObject]]:
+    class_id = int(obj.get("class_id", 1))
+    point_records = obj.get("points") or []
+
+    if "point_coords" in obj and obj.get("point_labels") is not None:
+        coords = _as_optional_point_array(obj.get("point_coords"), source)
+        labels = _labels_for_coords(obj.get("point_labels"), coords, source)
+        if visible_only and point_records:
+            _, _, record_visible = _point_records_to_arrays(point_records, source)
+            if len(record_visible) == len(coords):
+                coords = coords[record_visible]
+                labels = labels[record_visible]
+        return _prompt_from_provided_coords(
+            coords,
+            labels,
+            class_id=class_id,
+            source=source,
+            image_width=image_width,
+            image_height=image_height,
+            box=obj.get("box"),
+        )
+
+    if "positive_points" in obj or "negative_points" in obj:
+        positives = _as_optional_point_array(obj.get("positive_points"), source)
+        negatives = _as_optional_point_array(obj.get("negative_points"), source)
+        coords = np.concatenate([positives, negatives], axis=0)
+        labels = np.asarray([1] * len(positives) + [0] * len(negatives), dtype=np.int32)
+        return _prompt_from_provided_coords(
+            coords,
+            labels,
+            class_id=class_id,
+            source=source,
+            image_width=image_width,
+            image_height=image_height,
+            box=obj.get("box"),
+        )
+
+    if point_records and isinstance(point_records[0], dict):
+        coords, labels, record_visible = _point_records_to_arrays(point_records, source)
+        if visible_only:
+            coords = coords[record_visible]
+            labels = labels[record_visible]
+        return _prompt_from_provided_coords(
+            coords,
+            labels,
+            class_id=class_id,
+            source=source,
+            image_width=image_width,
+            image_height=image_height,
+            box=obj.get("box"),
+        )
+
+    return None
+
+
+def _extract_provided_prompt_objects(
+    data: Any,
+    source: Path,
+    image_width: int,
+    image_height: int,
+    visible_only: bool,
+) -> Optional[List[Tuple[Dict[str, Any], PromptObject]]]:
+    if isinstance(data, list):
+        if data and isinstance(data[0], dict):
+            coords, labels, record_visible = _point_records_to_arrays(data, source)
+            if visible_only:
+                coords = coords[record_visible]
+                labels = labels[record_visible]
+            return [
+                _prompt_from_provided_coords(
+                    coords,
+                    labels,
+                    class_id=1,
+                    source=source,
+                    image_width=image_width,
+                    image_height=image_height,
+                )
+            ]
+        return None
+
+    if not isinstance(data, dict):
+        return None
+
+    objects = data.get("objects")
+    if objects:
+        prompt_objects = []
+        for obj in objects:
+            provided_prompt = _provided_prompt_from_object(
+                obj,
+                source=source,
+                image_width=image_width,
+                image_height=image_height,
+                visible_only=visible_only,
+            )
+            if provided_prompt is None:
+                return None
+            prompt_objects.append(provided_prompt)
+        return prompt_objects
+
+    if "point_coords" in data and data.get("point_labels") is not None:
+        coords = _as_optional_point_array(data.get("point_coords"), source)
+        labels = _labels_for_coords(data.get("point_labels"), coords, source)
+        return [
+            _prompt_from_provided_coords(
+                coords,
+                labels,
+                class_id=int(data.get("class_id", 1)),
+                source=source,
+                image_width=image_width,
+                image_height=image_height,
+                box=data.get("box"),
+            )
+        ]
+
+    if "positive_points" in data or "negative_points" in data:
+        return [
+            _provided_prompt_from_object(
+                data,
+                source=source,
+                image_width=image_width,
+                image_height=image_height,
+                visible_only=visible_only,
+            )
+        ]
+
+    if isinstance(data.get("points"), list) and data["points"] and isinstance(data["points"][0], dict):
+        return [
+            _provided_prompt_from_object(
+                data,
+                source=source,
+                image_width=image_width,
+                image_height=image_height,
+                visible_only=visible_only,
+            )
+        ]
+
+    return None
 
 
 def _validate_negative_mode(negative_mode: str) -> str:
@@ -603,24 +780,36 @@ def prepare_coordinate_prompt_json(
         raise FileNotFoundError(f"Coordinate JSON not found: {coordinate_json_path}")
 
     data = json.loads(coordinate_json_path.read_text(encoding="utf-8"))
-    objects = []
-    for positive_points, class_id in _extract_positive_point_sets(
-        data,
+    provided_prompts = _extract_provided_prompt_objects(
+        data=data,
         source=coordinate_json_path,
+        image_width=image_width,
+        image_height=image_height,
         visible_only=visible_only,
-    ):
-        objects.append(
-            build_augmented_prompt_object(
-                positive_points=positive_points,
-                image_width=image_width,
-                image_height=image_height,
-                padding_ratio=padding_ratio,
-                min_padding_px=min_padding_px,
-                min_negative_distance=min_negative_distance,
-                negative_mode=negative_mode,
-                class_id=class_id,
+    )
+    if provided_prompts is None:
+        objects = []
+        prompt_objects = None
+        for positive_points, class_id in _extract_positive_point_sets(
+            data,
+            source=coordinate_json_path,
+            visible_only=visible_only,
+        ):
+            objects.append(
+                build_augmented_prompt_object(
+                    positive_points=positive_points,
+                    image_width=image_width,
+                    image_height=image_height,
+                    padding_ratio=padding_ratio,
+                    min_padding_px=min_padding_px,
+                    min_negative_distance=min_negative_distance,
+                    negative_mode=negative_mode,
+                    class_id=class_id,
+                )
             )
-        )
+    else:
+        objects = [prompt_json for prompt_json, _ in provided_prompts]
+        prompt_objects = [prompt_object for _, prompt_object in provided_prompts]
 
     augmented_prompt_json = {
         "source_coordinate_json": str(coordinate_json_path),
@@ -637,6 +826,9 @@ def prepare_coordinate_prompt_json(
             json.dumps(augmented_prompt_json, indent=2),
             encoding="utf-8",
         )
+
+    if prompt_objects is not None:
+        return prompt_objects
 
     return _prompt_objects_from_augmented_json(
         augmented_prompt_json,

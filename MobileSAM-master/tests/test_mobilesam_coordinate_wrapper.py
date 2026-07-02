@@ -225,7 +225,7 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
             self.assertEqual(augmented["negative_mode"], "box_8_points")
             self.assertEqual(len(prompt_objects), 1)
 
-    def test_prepare_coordinate_prompt_json_generates_negatives_from_source_positives(self):
+    def test_prepare_coordinate_prompt_json_preserves_source_point_labels(self):
         with TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             source_path = tmp_path / "frame_000000.json"
@@ -262,20 +262,15 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
                 obj["point_coords"],
                 [
                     [1.0, 1.0],
+                    [2.0, 2.0],
                     [3.0, 3.0],
-                    [0.7, 0.7],
-                    [3.3, 0.7],
-                    [3.3, 3.3],
-                    [0.7, 3.3],
                 ],
             )
-            self.assertEqual(obj["point_labels"], [1, 1, 0, 0, 0, 0])
+            self.assertEqual(obj["point_labels"], [1, 0, 1])
             self.assertEqual(obj["positive_points"], [[1.0, 1.0], [3.0, 3.0]])
-            np.testing.assert_allclose(
-                obj["negative_points"],
-                [[0.7, 0.7], [3.3, 0.7], [3.3, 3.3], [0.7, 3.3]],
-            )
-            self.assertEqual(prompt_objects[0][1].tolist(), [1, 1, 0, 0, 0, 0])
+            self.assertEqual(obj["negative_points"], [[2.0, 2.0]])
+            self.assertNotIn("box", obj)
+            self.assertEqual(prompt_objects[0][1].tolist(), [1, 0, 1])
 
     def test_run_mobilesam_for_frame_passes_generated_negative_labels_to_predictor(self):
         with TemporaryDirectory() as tmp:
@@ -318,10 +313,10 @@ class MobileSAMCoordinateWrapperTest(unittest.TestCase):
 
             np.testing.assert_allclose(
                 predictor.calls[0]["coords"],
-                [[1.0, 1.0], [0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+                [[1.0, 1.0], [4.0, 4.0]],
             )
-            self.assertEqual(predictor.calls[0]["labels"], [1, 0, 0, 0, 0])
-            np.testing.assert_allclose(predictor.calls[0]["box"], [0.0, 0.0, 2.0, 2.0])
+            self.assertEqual(predictor.calls[0]["labels"], [1, 0])
+            self.assertIsNone(predictor.calls[0]["box"])
             self.assertTrue(mask_path.exists())
             self.assertTrue(preview_path.exists())
 
