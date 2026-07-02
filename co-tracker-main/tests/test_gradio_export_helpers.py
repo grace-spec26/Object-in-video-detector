@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gradio_demo"))
 
 from export_helpers import (  # noqa: E402
     build_sam_point_prompt_payload,
+    labeled_query_points_for_frame,
     scale_tracks_to_frame_space,
     store_coordinate_arrays,
     store_original_frames,
@@ -217,6 +218,25 @@ class ExportHelpersTest(unittest.TestCase):
         self.assertEqual(payload["objects"][0]["positive_points"], [[1.0, 2.0], [5.0, 6.0]])
         self.assertEqual(payload["objects"][0]["negative_points"], [[3.0, 4.0]])
         self.assertEqual(payload["objects"][0]["point_labels"], [1, 0, 1])
+
+    def test_labeled_query_points_for_frame_scales_selected_points(self):
+        query_points = [
+            [(10.0, 20.0, 0, 1), (30.0, 40.0, 0, 0)],
+            [(5.0, 6.0, 1, 1)],
+        ]
+
+        point_coords, point_labels = labeled_query_points_for_frame(
+            query_points,
+            0,
+            source_hw=(100, 200),
+            target_hw=(200, 400),
+        )
+
+        np.testing.assert_allclose(
+            point_coords,
+            np.asarray([[20.0, 40.0], [60.0, 80.0]], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(point_labels, np.asarray([1, 0], dtype=np.int32))
 
     def test_scale_tracks_to_frame_space_clips_to_target_bounds(self):
         tracks = np.array([[[250.0, -10.0]]], dtype=np.float32)

@@ -31,6 +31,7 @@ try:
     from .export_helpers import (
         DEFAULT_COORDINATES_DIR,
         DEFAULT_FRAMES_DIR,
+        labeled_query_points_for_frame,
         scale_tracks_to_frame_space,
         store_coordinate_arrays,
         store_original_frames,
@@ -53,6 +54,7 @@ except ImportError:
     from export_helpers import (
         DEFAULT_COORDINATES_DIR,
         DEFAULT_FRAMES_DIR,
+        labeled_query_points_for_frame,
         scale_tracks_to_frame_space,
         store_coordinate_arrays,
         store_original_frames,
@@ -336,7 +338,9 @@ def get_point(frame_num, point_type, video_queried_preview, query_points, query_
         video_queried_preview, # Updated preview video
         query_points, # Updated query points
         query_points_color, # Updated query points color
-        query_count # Updated query count
+        query_count, # Updated query count
+        gr.update(interactive=True),
+        gr.update(interactive=True),
     )
 
 
@@ -715,35 +719,42 @@ def draw_sam_preview(frame, mask, point_coords, point_labels):
 def preview_sam_on_frame(
     video_frames,
     video_preview_array,
+    query_points,
     selected_tracks,
     selected_visibility,
     selected_point_labels,
     frame_num,
     sam_model,
 ):
-    if selected_tracks is None or selected_point_labels is None:
-        message = "Track selected positive/negative points before previewing SAM."
-        gr.Warning(message, duration=5)
-        return None, message
     if video_frames is None or video_preview_array is None:
         message = "Submit a video before previewing SAM."
         gr.Warning(message, duration=5)
         return None, message
 
     frame_index = int(np.clip(int(frame_num), 0, len(video_frames) - 1))
-    scaled_tracks = scale_tracks_to_frame_space(
-        selected_tracks,
+    point_coords, point_labels = labeled_query_points_for_frame(
+        query_points,
+        frame_index,
         source_hw=video_preview_array.shape[1:3],
         target_hw=video_frames.shape[1:3],
     )
-    point_coords, point_labels = visible_labeled_points_for_frame(
-        scaled_tracks,
-        frame_index,
-        point_labels=selected_point_labels,
-        visibility=selected_visibility,
-    )
+    prompt_source = "selected"
+    if len(point_coords) == 0 and selected_tracks is not None and selected_point_labels is not None:
+        scaled_tracks = scale_tracks_to_frame_space(
+            selected_tracks,
+            source_hw=video_preview_array.shape[1:3],
+            target_hw=video_frames.shape[1:3],
+        )
+        point_coords, point_labels = visible_labeled_points_for_frame(
+            scaled_tracks,
+            frame_index,
+            point_labels=selected_point_labels,
+            visibility=selected_visibility,
+        )
+        prompt_source = "tracked"
+
     if len(point_coords) == 0:
-        message = f"No visible tracked points on frame {frame_index}."
+        message = f"No selected or visible tracked points on frame {frame_index}."
         gr.Warning(message, duration=5)
         return as_uint8_rgb_frame(video_frames[frame_index]), message
     if not np.any(point_labels == 1):
@@ -767,7 +778,8 @@ def preview_sam_on_frame(
     negative_count = int(np.sum(point_labels == 0))
     return (
         preview,
-        f"SAM preview frame {frame_index} with {runtime['model_label']} on {runtime['device']} "
+        f"SAM preview frame {frame_index} from {prompt_source} points with "
+        f"{runtime['model_label']} on {runtime['device']} "
         f"({positive_count} positive, {negative_count} negative point(s)).",
     )
 
@@ -957,7 +969,9 @@ with gr.Blocks() as demo:
             video_queried_preview,
             query_points,
             query_points_color,
-            query_count
+            query_count,
+            sam_model_dropdown,
+            sam_preview_button,
         ], 
         queue = False
     )
@@ -1074,6 +1088,7 @@ with gr.Blocks() as demo:
         inputs = [
             video,
             video_preview,
+            query_points,
             selected_tracks,
             selected_visibility,
             selected_point_labels,

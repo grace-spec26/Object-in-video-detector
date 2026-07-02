@@ -95,6 +95,48 @@ def normalize_point_labels(point_labels: Optional[Sequence[int]], point_count: i
     return labels
 
 
+def labeled_query_points_for_frame(
+    query_points: Optional[Sequence[Sequence[Sequence[float]]]],
+    frame_index: int,
+    source_hw: Optional[Sequence[int]] = None,
+    target_hw: Optional[Sequence[int]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Return same-frame clicked query points as SAM coordinates and labels."""
+    empty_coords = np.empty((0, 2), dtype=np.float32)
+    empty_labels = np.empty((0,), dtype=np.int32)
+    if query_points is None or len(query_points) == 0:
+        return empty_coords, empty_labels
+
+    frame_index = int(frame_index)
+    if frame_index < 0 or frame_index >= len(query_points):
+        return empty_coords, empty_labels
+
+    coords: List[List[float]] = []
+    labels: List[int] = []
+    for point in query_points[frame_index]:
+        if len(point) < 2:
+            raise ValueError("Each query point must contain at least x and y coordinates.")
+        coords.append([float(point[0]), float(point[1])])
+        labels.append(int(point[3]) if len(point) >= 4 else POSITIVE_POINT_LABEL)
+
+    if not coords:
+        return empty_coords, empty_labels
+
+    coords_array = np.asarray(coords, dtype=np.float32)
+    labels_array = normalize_point_labels(labels, len(coords_array))
+    if source_hw is not None and target_hw is not None:
+        source_height, source_width = [float(value) for value in source_hw]
+        target_height, target_width = [float(value) for value in target_hw]
+        if min(source_height, source_width, target_height, target_width) <= 0:
+            raise ValueError("Source and target frame dimensions must be positive.")
+        coords_array = coords_array.copy()
+        coords_array[:, 0] *= target_width / source_width
+        coords_array[:, 1] *= target_height / source_height
+        coords_array[:, 0] = np.clip(coords_array[:, 0], 0, target_width - 1)
+        coords_array[:, 1] = np.clip(coords_array[:, 1], 0, target_height - 1)
+    return coords_array, labels_array
+
+
 def visible_labeled_points_for_frame(
     tracks: np.ndarray,
     frame_index: int,

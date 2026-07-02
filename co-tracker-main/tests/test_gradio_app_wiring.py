@@ -31,8 +31,17 @@ class GradioAppWiringTest(unittest.TestCase):
 
         self.assertIsNotNone(match)
         self.assertIn("fn = preview_sam_on_frame", match.group(1))
+        self.assertIn("query_points", match.group(1))
         self.assertIn("selected_point_labels", match.group(1))
         self.assertIn("sam_model_dropdown", match.group(1))
+
+    def test_selecting_points_enables_sam_preview_before_tracking(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"current_frame\.select\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("sam_model_dropdown", match.group(1))
+        self.assertIn("sam_preview_button", match.group(1))
 
     def test_store_coordinates_uses_selected_point_labels(self):
         app_source = APP_PATH.read_text()
