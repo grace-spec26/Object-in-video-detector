@@ -35,6 +35,23 @@ def parse_max_frame_count(value) -> int:
     return max(0, max_frames)
 
 
+def parse_target_fps(value) -> float:
+    """Return a non-negative target FPS; 0 means keep the source frame rate."""
+    if value is None:
+        return 0.0
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 0.0
+
+    try:
+        target_fps = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Skip frame target FPS must be a number. Use 0 to keep the source FPS.") from exc
+
+    return max(0.0, target_fps)
+
+
 def _even(value: int) -> int:
     return max(2, value - (value % 2))
 
@@ -69,6 +86,27 @@ def resize_video_for_tracking(video: np.ndarray, resolution_label: str) -> np.nd
         for frame in video_array
     ]
     return np.stack(resized_frames, axis=0).astype(video_array.dtype, copy=False)
+
+
+def get_frame_sampling_stride(source_fps: float, target_fps: float) -> int:
+    """Map a target FPS to an integer keep-every-N-frames stride."""
+    if float(source_fps) <= 0:
+        raise ValueError("source_fps must be positive.")
+    if float(target_fps) <= 0:
+        return 1
+    return max(1, int(round(float(source_fps) / float(target_fps))))
+
+
+def sample_video_for_target_fps(video: np.ndarray, source_fps: float, target_fps: float):
+    """Subsample a video to roughly match a requested FPS using integer frame strides."""
+    video_array = np.asarray(video)
+    if video_array.ndim != 4:
+        raise ValueError("Video must have shape (T, H, W, C).")
+
+    stride = get_frame_sampling_stride(source_fps, target_fps)
+    if stride == 1:
+        return video_array, float(source_fps), stride
+    return video_array[::stride], float(source_fps) / float(stride), stride
 
 
 def subsample_video_tensor(video_tensor, stride: int = TRACKING_FRAME_STRIDE):

@@ -59,6 +59,15 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertNotIn("POINT_SIZE + 3", match.group(0))
         self.assertNotIn("cv2.putText", match.group(0))
 
+    def test_submit_uses_skip_fps_input(self):
+        app_source = APP_PATH.read_text()
+
+        self.assertIn('label="Skip frame target FPS (0 = keep source FPS)"', app_source)
+        match = re.search(r"submit\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("skip_fps_input", match.group(1))
+
 
 if __name__ == "__main__":
     unittest.main()

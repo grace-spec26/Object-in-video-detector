@@ -46,8 +46,10 @@ try:
         get_online_chunk_start_indices,
         map_frame_index_to_sampled,
         parse_max_frame_count,
+        parse_target_fps,
         resolve_torch_device,
         resize_video_for_tracking,
+        sample_video_for_target_fps,
         subsample_video_tensor,
     )
 except ImportError:
@@ -69,8 +71,10 @@ except ImportError:
         get_online_chunk_start_indices,
         map_frame_index_to_sampled,
         parse_max_frame_count,
+        parse_target_fps,
         resolve_torch_device,
         resize_video_for_tracking,
+        sample_video_for_target_fps,
         subsample_video_tensor,
     )
 
@@ -399,19 +403,22 @@ def choose_frame(frame_num, video_preview_array):
     return video_preview_array[int(frame_num)]
 
 
-def preprocess_video_input(video_path, tracking_resolution, max_frames):
+def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fps):
     if video_path is None:
         raise gr.Error("Please upload a video before submitting.")
 
     try:
         max_frames_to_load = parse_max_frame_count(max_frames)
+        target_fps = parse_target_fps(skip_fps)
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
 
     video_arr = mediapy.read_video(video_path)
-    video_fps = video_arr.metadata.fps
+    source_video_fps = float(video_arr.metadata.fps)
+    video_fps = source_video_fps
     num_frames = video_arr.shape[0]
     original_num_frames = num_frames
+    loaded_source_frames = num_frames
     if max_frames_to_load and num_frames > max_frames_to_load:
         gr.Warning(
             f"Only the first {max_frames_to_load} of {original_num_frames} frames will be used.",
@@ -419,6 +426,24 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames):
         )
         video_arr = video_arr[:max_frames_to_load]
         num_frames = max_frames_to_load
+        loaded_source_frames = num_frames
+
+    sampling_stride = 1
+    if target_fps > 0:
+        video_arr, video_fps, sampling_stride = sample_video_for_target_fps(
+            video_arr,
+            source_fps=source_video_fps,
+            target_fps=target_fps,
+        )
+        num_frames = video_arr.shape[0]
+        if sampling_stride > 1:
+            gr.Warning(
+                (
+                    f"Sampling point-selection video from {source_video_fps:.2f} FPS to about "
+                    f"{video_fps:.2f} FPS by keeping every {sampling_stride} frame(s)."
+                ),
+                duration=5,
+            )
 
     # Resize to preview size for faster processing, width = PREVIEW_WIDTH
     height, width = video_arr.shape[1:3]
@@ -433,10 +458,21 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames):
     interactive = True
 
     load_status = f"Loaded {num_frames} frames for point selection."
-    if num_frames != original_num_frames:
+    if loaded_source_frames != original_num_frames and sampling_stride > 1:
         load_status = (
-            f"Loaded first {num_frames} of {original_num_frames} frames for point selection. "
+            f"Loaded first {loaded_source_frames} of {original_num_frames} source frames, then sampled "
+            f"to {num_frames} frames at about {video_fps:.2f} FPS. "
             "Set Max frames to load to 0 to use the full video."
+        )
+    elif loaded_source_frames != original_num_frames:
+        load_status = (
+            f"Loaded first {loaded_source_frames} of {original_num_frames} frames for point selection. "
+            "Set Max frames to load to 0 to use the full video."
+        )
+    elif sampling_stride > 1:
+        load_status = (
+            f"Loaded {num_frames} sampled frames for point selection at about {video_fps:.2f} FPS "
+            f"(every {sampling_stride} frame(s) kept)."
         )
 
     return (
@@ -817,6 +853,11 @@ with gr.Blocks() as demo:
                 label="Max frames to load (0 = full video)",
                 interactive=True,
             )
+            skip_fps_input = gr.Number(
+                value=0,
+                label="Skip frame target FPS (0 = keep source FPS)",
+                interactive=True,
+            )
             submit = gr.Button("Submit", scale=0)
 
             import os
@@ -903,7 +944,7 @@ with gr.Blocks() as demo:
 
     submit.click(
         fn = preprocess_video_input, 
-        inputs = [video_in, tracking_resolution, max_frames_input],
+        inputs = [video_in, tracking_resolution, max_frames_input, skip_fps_input],
         outputs = [
             video,
             video_preview,

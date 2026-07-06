@@ -9,13 +9,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gradio_demo"))
 
 from tracking_helpers import (  # noqa: E402
     expand_sampled_time_axis,
+    get_frame_sampling_stride,
     get_cached_cotracker_model,
     get_online_chunk_start_indices,
     get_tracking_resolution,
     map_frame_index_to_sampled,
     parse_max_frame_count,
+    parse_target_fps,
     resolve_torch_device,
     resize_video_for_tracking,
+    sample_video_for_target_fps,
     subsample_video_tensor,
 )
 
@@ -76,6 +79,20 @@ class TrackingHelpersTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "whole number"):
             parse_max_frame_count("not-a-number")
 
+    def test_parse_target_fps_uses_zero_for_no_sampling(self):
+        self.assertEqual(parse_target_fps(None), 0.0)
+        self.assertEqual(parse_target_fps(""), 0.0)
+        self.assertEqual(parse_target_fps(0), 0.0)
+        self.assertEqual(parse_target_fps(-5), 0.0)
+
+    def test_parse_target_fps_accepts_gradio_number_values(self):
+        self.assertEqual(parse_target_fps("10"), 10.0)
+        self.assertEqual(parse_target_fps(10.0), 10.0)
+
+    def test_parse_target_fps_rejects_non_numeric_values(self):
+        with self.assertRaisesRegex(ValueError, "Skip frame"):
+            parse_target_fps("not-a-number")
+
     def test_resolve_torch_device_prefers_cuda_then_mps_then_cpu(self):
         self.assertEqual(resolve_torch_device(FakeTorch(cuda_available=True, mps_available=True)), "cuda")
         self.assertEqual(resolve_torch_device(FakeTorch(cuda_available=False, mps_available=True)), "mps")
@@ -103,6 +120,24 @@ class TrackingHelpersTest(unittest.TestCase):
         sampled = subsample_video_tensor(video_tensor, stride=2)
 
         np.testing.assert_array_equal(sampled[:, :, 0, 0, 0], np.array([[0, 2, 4]]))
+
+    def test_get_frame_sampling_stride_rounds_from_target_fps(self):
+        self.assertEqual(get_frame_sampling_stride(source_fps=30.0, target_fps=10.0), 3)
+        self.assertEqual(get_frame_sampling_stride(source_fps=29.97, target_fps=10.0), 3)
+        self.assertEqual(get_frame_sampling_stride(source_fps=24.0, target_fps=30.0), 1)
+
+    def test_sample_video_for_target_fps_keeps_every_rounded_stride_frame(self):
+        video = np.arange(5 * 2 * 2 * 3, dtype=np.uint8).reshape(5, 2, 2, 3)
+
+        sampled, effective_fps, stride = sample_video_for_target_fps(
+            video,
+            source_fps=30.0,
+            target_fps=10.0,
+        )
+
+        np.testing.assert_array_equal(sampled, video[[0, 3]])
+        self.assertEqual(effective_fps, 10.0)
+        self.assertEqual(stride, 3)
 
     def test_map_frame_index_to_sampled_uses_previous_available_frame(self):
         self.assertEqual(map_frame_index_to_sampled(0, sampled_frame_count=3, stride=2), 0)
