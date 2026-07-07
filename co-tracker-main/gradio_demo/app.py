@@ -47,6 +47,7 @@ try:
         ensure_frame_points,
         flatten_prompt_sources,
         merge_frame_point_lists,
+        pending_refinement_points,
         pop_refinement_point,
         remove_prompt_by_source,
         remove_nearest_refinement_point,
@@ -86,6 +87,7 @@ except ImportError:
         ensure_frame_points,
         flatten_prompt_sources,
         merge_frame_point_lists,
+        pending_refinement_points,
         pop_refinement_point,
         remove_prompt_by_source,
         remove_nearest_refinement_point,
@@ -445,18 +447,24 @@ def draw_refinement_points_on_frame(frame, frame_points):
     return frame_draw
 
 
-def choose_tracked_frame(frame_num, tracked_video_preview, refinement_query_points=None):
+def choose_tracked_frame(
+    frame_num,
+    tracked_video_preview,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
     if tracked_video_preview is None:
         return None
 
     frame_index = int(np.clip(int(frame_num), 0, len(tracked_video_preview) - 1))
-    refinement_query_points = ensure_frame_points(
+    pending_points = pending_refinement_points(
         refinement_query_points,
-        len(tracked_video_preview),
+        tracked_prompt_sources,
+        frame_count=len(tracked_video_preview),
     )
     return draw_refinement_points_on_frame(
         tracked_video_preview[frame_index],
-        refinement_query_points[frame_index],
+        pending_points[frame_index],
     )
 
 
@@ -749,7 +757,7 @@ def edit_refinement_point(
                 )
                 editable_prompt_count = count_frame_points(updated_query_points) + count_frame_points(updated_points)
                 return (
-                    choose_tracked_frame(frame_index, updated_tracked_video, updated_points),
+                    choose_tracked_frame(frame_index, updated_tracked_video, updated_points, updated_sources),
                     updated_tracked_video,
                     updated_query_points,
                     updated_query_colors,
@@ -784,7 +792,7 @@ def edit_refinement_point(
         message = f"Added {point_name} refinement point on frame {frame_index}."
 
     return (
-        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points, tracked_prompt_sources),
         tracked_video_preview,
         query_points,
         query_points_color,
@@ -799,7 +807,7 @@ def edit_refinement_point(
     )
 
 
-def undo_refinement_point(frame_num, tracked_video_preview, refinement_query_points):
+def undo_refinement_point(frame_num, tracked_video_preview, refinement_query_points, tracked_prompt_sources=None):
     if tracked_video_preview is None:
         message = "Track a video before editing processed-frame points."
         gr.Warning(message, duration=5)
@@ -815,14 +823,14 @@ def undo_refinement_point(frame_num, tracked_video_preview, refinement_query_poi
         else f"No refinement points on frame {frame_index}."
     )
     return (
-        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points, tracked_prompt_sources),
         updated_points,
         gr.update(interactive=count_frame_points(updated_points) > 0),
         message,
     )
 
 
-def clear_frame_refinement_edits(frame_num, tracked_video_preview, refinement_query_points):
+def clear_frame_refinement_edits(frame_num, tracked_video_preview, refinement_query_points, tracked_prompt_sources=None):
     if tracked_video_preview is None:
         message = "Track a video before editing processed-frame points."
         gr.Warning(message, duration=5)
@@ -839,14 +847,14 @@ def clear_frame_refinement_edits(frame_num, tracked_video_preview, refinement_qu
         else f"No refinement points to clear on frame {frame_index}."
     )
     return (
-        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points, tracked_prompt_sources),
         updated_points,
         gr.update(interactive=count_frame_points(updated_points) > 0),
         message,
     )
 
 
-def clear_all_refinement_edits(frame_num, tracked_video_preview, refinement_query_points):
+def clear_all_refinement_edits(frame_num, tracked_video_preview, refinement_query_points, tracked_prompt_sources=None):
     if tracked_video_preview is None:
         message = "Track a video before editing processed-frame points."
         gr.Warning(message, duration=5)
@@ -859,7 +867,7 @@ def clear_all_refinement_edits(frame_num, tracked_video_preview, refinement_quer
     updated_points = clear_all_refinement_points(refinement_query_points)
     message = "Cleared all refinement points." if had_points else "No refinement points to clear."
     return (
-        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points, tracked_prompt_sources),
         updated_points,
         gr.update(interactive=False),
         message,
@@ -1201,12 +1209,17 @@ def reprocess_with_refinements(
         )
     )
     frame_index = int(np.clip(int(tracked_frame_num), 0, frame_count - 1))
-    result[6] = choose_tracked_frame(frame_index, result[4], refinement_query_points)
+    tracked_prompt_sources = flatten_prompt_sources(query_points, refinement_query_points)
+    result[6] = choose_tracked_frame(
+        frame_index,
+        result[4],
+        refinement_query_points,
+        tracked_prompt_sources,
+    )
     result[-1] = (
         f"Re-processing complete with {merged_query_count} point prompt(s). "
         "Query points on video has been replaced."
     )
-    tracked_prompt_sources = flatten_prompt_sources(query_points, refinement_query_points)
     return (
         *result[:4],
         tracked_prompt_sources,
@@ -1335,6 +1348,7 @@ def preview_sam_on_frame(
     sam_model,
     prefer_tracked_points=False,
     refinement_query_points=None,
+    tracked_prompt_sources=None,
 ):
     if video_frames is None or video_preview_array is None:
         message = "Submit a video before previewing SAM."
@@ -1388,8 +1402,13 @@ def preview_sam_on_frame(
         )
         prompt_source = "tracked"
 
-    refinement_coords, refinement_labels = labeled_query_points_for_frame(
+    pending_refinement_query_points = pending_refinement_points(
         refinement_query_points,
+        tracked_prompt_sources,
+        frame_count=len(video_frames),
+    )
+    refinement_coords, refinement_labels = labeled_query_points_for_frame(
+        pending_refinement_query_points,
         frame_index,
         source_hw=video_preview_array.shape[1:3],
         target_hw=video_frames.shape[1:3],
@@ -1447,6 +1466,7 @@ def preview_sam_for_selected_frame(
     tracked_video_preview,
     sam_model,
     refinement_query_points=None,
+    tracked_prompt_sources=None,
 ):
     has_processed_selection = tracked_video_preview is not None and selected_tracks is not None
     frame_num = tracked_frame_num if has_processed_selection else query_frame_num
@@ -1461,6 +1481,7 @@ def preview_sam_for_selected_frame(
         sam_model,
         prefer_tracked_points=has_processed_selection,
         refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
     )
 
 
@@ -1702,7 +1723,7 @@ with gr.Blocks() as demo:
 
     tracked_query_frames.change(
         fn = choose_tracked_frame,
-        inputs = [tracked_query_frames, tracked_video_preview, refinement_query_points],
+        inputs = [tracked_query_frames, tracked_video_preview, refinement_query_points, tracked_prompt_sources],
         outputs = [
             tracked_frame_preview,
         ],
@@ -1858,6 +1879,7 @@ with gr.Blocks() as demo:
             tracked_query_frames,
             tracked_video_preview,
             refinement_query_points,
+            tracked_prompt_sources,
         ],
         outputs = [
             tracked_frame_preview,
@@ -1874,6 +1896,7 @@ with gr.Blocks() as demo:
             tracked_query_frames,
             tracked_video_preview,
             refinement_query_points,
+            tracked_prompt_sources,
         ],
         outputs = [
             tracked_frame_preview,
@@ -1890,6 +1913,7 @@ with gr.Blocks() as demo:
             tracked_query_frames,
             tracked_video_preview,
             refinement_query_points,
+            tracked_prompt_sources,
         ],
         outputs = [
             tracked_frame_preview,
@@ -1988,6 +2012,7 @@ with gr.Blocks() as demo:
             tracked_video_preview,
             processed_sam_model_dropdown,
             refinement_query_points,
+            tracked_prompt_sources,
         ],
         outputs = [
             processed_sam_preview_image,

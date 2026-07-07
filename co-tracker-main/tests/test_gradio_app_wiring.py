@@ -172,6 +172,17 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("tracked_frame_preview", match.group(1))
         self.assertIn("tracked_prompt_sources", match.group(1))
 
+    def test_processed_frame_preview_filters_already_tracked_refinement_points(self):
+        app_source = APP_PATH.read_text()
+        frame_change = re.search(r"tracked_query_frames\.change\((.*?)\n\s*\)", app_source, re.DOTALL)
+        reprocess = app_source.split("def reprocess_with_refinements", maxsplit=1)[1]
+        reprocess = reprocess.split("def store_frames_from_state", maxsplit=1)[0]
+
+        self.assertIsNotNone(frame_change)
+        self.assertIn("tracked_prompt_sources", frame_change.group(1))
+        self.assertIn("pending_refinement_points", app_source)
+        self.assertIn("tracked_prompt_sources,", reprocess)
+
     def test_refinement_edit_callbacks_enable_reprocess_when_any_edits_remain(self):
         app_source = APP_PATH.read_text()
 
@@ -195,6 +206,7 @@ class GradioAppWiringTest(unittest.TestCase):
 
         self.assertIsNotNone(match)
         self.assertIn("refinement_query_points", match.group(1))
+        self.assertIn("tracked_prompt_sources", match.group(1))
         self.assertRegex(
             app_source,
             r"def preview_sam_for_selected_frame\([^)]*refinement_query_points",

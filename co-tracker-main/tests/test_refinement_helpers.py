@@ -13,6 +13,7 @@ from refinement_helpers import (  # noqa: E402
     empty_frame_points,
     flatten_prompt_sources,
     merge_frame_point_lists,
+    pending_refinement_points,
     pop_refinement_point,
     remove_prompt_by_source,
     remove_nearest_refinement_point,
@@ -149,6 +150,26 @@ class RefinementHelpersTest(unittest.TestCase):
                 ("base", 0, 1),
                 ("refinement", 0, 0),
                 ("base", 1, 0),
+            ],
+        )
+
+    def test_pending_refinement_points_excludes_refinements_already_tracked(self):
+        refinement_points = [
+            [(1.0, 1.0, 0, 1), (2.0, 2.0, 0, 0)],
+            [(3.0, 3.0, 1, 1)],
+        ]
+        tracked_sources = [
+            ("base", 0, 0),
+            ("refinement", 0, 1),
+        ]
+
+        pending = pending_refinement_points(refinement_points, tracked_sources)
+
+        self.assertEqual(
+            pending,
+            [
+                [(1.0, 1.0, 0, 1)],
+                [(3.0, 3.0, 1, 1)],
             ],
         )
 

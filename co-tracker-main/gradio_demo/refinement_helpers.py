@@ -165,5 +165,28 @@ def drop_prompt_source(prompt_sources, removed_index):
     return updated
 
 
+def pending_refinement_points(refinement_points, tracked_prompt_sources=None, frame_count=None):
+    refinements = copy_frame_points(refinement_points)
+    target_count = len(refinements) if frame_count is None else max(0, int(frame_count))
+    refinements = ensure_frame_points(refinements, target_count)
+
+    tracked_refinements = set()
+    for source in tracked_prompt_sources or []:
+        if len(source) < 3:
+            continue
+        kind, frame_index, point_index = source[:3]
+        if str(kind) == "refinement":
+            tracked_refinements.add((int(frame_index), int(point_index)))
+
+    return [
+        [
+            point
+            for point_index, point in enumerate(frame_points)
+            if (frame_index, point_index) not in tracked_refinements
+        ]
+        for frame_index, frame_points in enumerate(refinements)
+    ]
+
+
 def count_frame_points(points_by_frame):
     return sum(len(frame_points) for frame_points in (points_by_frame or []))
