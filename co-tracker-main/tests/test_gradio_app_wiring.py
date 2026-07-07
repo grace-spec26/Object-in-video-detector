@@ -112,6 +112,47 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("processed_sam_model_dropdown", match.group(1))
         self.assertIn("processed_sam_preview_button", match.group(1))
 
+    def test_third_step_has_refinement_controls_for_processed_frames(self):
+        app_source = APP_PATH.read_text()
+        third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
+
+        self.assertIn("refinement_point_type = gr.Radio", third_step_block)
+        self.assertIn("refinement_edit_mode = gr.Radio", third_step_block)
+        self.assertIn('refinement_undo = gr.Button("Undo Frame Edit"', third_step_block)
+        self.assertIn('refinement_clear_frame = gr.Button("Clear Frame Edits"', third_step_block)
+        self.assertIn('refinement_clear_all = gr.Button("Clear All Edits"', third_step_block)
+        self.assertIn('reprocess_button = gr.Button("Re-process"', third_step_block)
+        self.assertIn("tracked_frame_preview = gr.Image", third_step_block)
+        self.assertIn("interactive=True", third_step_block)
+
+    def test_processed_frame_click_adds_or_deletes_refinement_points(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"tracked_frame_preview\.select\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("fn = edit_refinement_point", match.group(1))
+        self.assertIn("refinement_edit_mode", match.group(1))
+        self.assertIn("refinement_point_type", match.group(1))
+        self.assertIn("refinement_query_points", match.group(1))
+        self.assertIn("reprocess_button", match.group(1))
+
+    def test_reprocess_button_uses_refinement_points_and_replaces_processed_video(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"reprocess_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("fn = reprocess_with_refinements", match.group(1))
+        self.assertIn("query_points", match.group(1))
+        self.assertIn("refinement_query_points", match.group(1))
+        self.assertIn("tracked_video_preview", match.group(1))
+        self.assertIn("tracked_frame_preview", match.group(1))
+
+    def test_refinement_edit_callbacks_enable_reprocess_when_any_edits_remain(self):
+        app_source = APP_PATH.read_text()
+
+        self.assertIn("gr.update(interactive=count_frame_points(updated_points) > 0)", app_source)
+        self.assertIn("gr.update(interactive=False)", app_source)
+
     def test_sam_preview_uses_processed_frame_selection_after_tracking(self):
         app_source = APP_PATH.read_text()
         match = re.search(r"processed_sam_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)

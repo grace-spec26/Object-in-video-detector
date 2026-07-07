@@ -37,6 +37,17 @@ try:
         store_original_frames,
         visible_labeled_points_for_frame,
     )
+    from .refinement_helpers import (
+        append_refinement_point,
+        clear_all_refinement_points,
+        clear_frame_refinement_points,
+        count_frame_points,
+        empty_frame_points,
+        ensure_frame_points,
+        merge_frame_point_lists,
+        pop_refinement_point,
+        remove_nearest_refinement_point,
+    )
     from .tracking_helpers import (
         DEFAULT_TRACKING_RESOLUTION,
         TRACKING_FRAME_STRIDE,
@@ -61,6 +72,17 @@ except ImportError:
         store_coordinate_arrays,
         store_original_frames,
         visible_labeled_points_for_frame,
+    )
+    from refinement_helpers import (
+        append_refinement_point,
+        clear_all_refinement_points,
+        clear_frame_refinement_points,
+        count_frame_points,
+        empty_frame_points,
+        ensure_frame_points,
+        merge_frame_point_lists,
+        pop_refinement_point,
+        remove_nearest_refinement_point,
     )
     from tracking_helpers import (
         DEFAULT_TRACKING_RESOLUTION,
@@ -263,6 +285,9 @@ POINT_COLORS = {
     1: (0, 255, 0),
     0: (255, 0, 0),
 }
+REFINEMENT_ADD_MODE = "Add"
+REFINEMENT_DELETE_MODE = "Delete nearest"
+REFINEMENT_EDIT_MODE_CHOICES = (REFINEMENT_ADD_MODE, REFINEMENT_DELETE_MODE)
 SAM_IMAGE_MODEL_CHOICES = (
     "sam2.1_hiera_tiny.pt",
     "sam2.1_hiera_small.pt",
@@ -403,12 +428,168 @@ def choose_frame(frame_num, video_preview_array):
     return video_preview_array[int(frame_num)]
 
 
-def choose_tracked_frame(frame_num, tracked_video_preview):
+def draw_refinement_points_on_frame(frame, frame_points):
+    if frame is None:
+        return None
+
+    frame_draw = np.asarray(frame).copy()
+    for point in frame_points or []:
+        x, y, _, point_label = unpack_query_point(point)
+        frame_draw = draw_query_point(frame_draw, x, y, point_label)
+    return frame_draw
+
+
+def choose_tracked_frame(frame_num, tracked_video_preview, refinement_query_points=None):
     if tracked_video_preview is None:
         return None
 
     frame_index = int(np.clip(int(frame_num), 0, len(tracked_video_preview) - 1))
-    return tracked_video_preview[frame_index]
+    refinement_query_points = ensure_frame_points(
+        refinement_query_points,
+        len(tracked_video_preview),
+    )
+    return draw_refinement_points_on_frame(
+        tracked_video_preview[frame_index],
+        refinement_query_points[frame_index],
+    )
+
+
+def refinement_colors_for_points(refinement_query_points, frame_count):
+    refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
+    return [
+        [POINT_COLORS.get(unpack_query_point(point)[3], POINT_COLORS[1]) for point in frame_points]
+        for frame_points in refinement_query_points
+    ]
+
+
+def merge_query_point_colors(query_points_color, refinement_query_points, frame_count):
+    merged_colors = [list(frame_colors) for frame_colors in (query_points_color or [])]
+    while len(merged_colors) < frame_count:
+        merged_colors.append([])
+    merged_colors = merged_colors[:frame_count]
+    refinement_colors = refinement_colors_for_points(refinement_query_points, frame_count)
+    return [
+        base_colors + added_colors
+        for base_colors, added_colors in zip(merged_colors, refinement_colors)
+    ]
+
+
+def edit_refinement_point(
+    frame_num,
+    refinement_edit_mode,
+    refinement_point_type,
+    tracked_video_preview,
+    refinement_query_points,
+    evt: gr.SelectData,
+):
+    if tracked_video_preview is None:
+        message = "Track a video before editing processed-frame points."
+        gr.Warning(message, duration=5)
+        return None, refinement_query_points, gr.update(interactive=False), message
+
+    frame_count = len(tracked_video_preview)
+    frame_index = int(np.clip(int(frame_num), 0, frame_count - 1))
+    refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
+    x, y = evt.index
+
+    if str(refinement_edit_mode) == REFINEMENT_DELETE_MODE:
+        updated_points, removed = remove_nearest_refinement_point(
+            refinement_query_points,
+            frame_index=frame_index,
+            x=x,
+            y=y,
+            max_distance=max(12.0, POINT_PROMPT_RADIUS * 4.0),
+        )
+        message = (
+            f"Removed refinement point on frame {frame_index}."
+            if removed
+            else f"No refinement point near click on frame {frame_index}."
+        )
+    else:
+        point_label = point_label_from_choice(refinement_point_type)
+        updated_points = append_refinement_point(
+            refinement_query_points,
+            frame_index=frame_index,
+            x=x,
+            y=y,
+            label=point_label,
+        )
+        point_name = "positive" if point_label == 1 else "negative"
+        message = f"Added {point_name} refinement point on frame {frame_index}."
+
+    return (
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        updated_points,
+        gr.update(interactive=count_frame_points(updated_points) > 0),
+        message,
+    )
+
+
+def undo_refinement_point(frame_num, tracked_video_preview, refinement_query_points):
+    if tracked_video_preview is None:
+        message = "Track a video before editing processed-frame points."
+        gr.Warning(message, duration=5)
+        return None, refinement_query_points, gr.update(interactive=False), message
+
+    frame_count = len(tracked_video_preview)
+    frame_index = int(np.clip(int(frame_num), 0, frame_count - 1))
+    refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
+    updated_points, removed = pop_refinement_point(refinement_query_points, frame_index)
+    message = (
+        f"Removed last refinement point on frame {frame_index}."
+        if removed
+        else f"No refinement points on frame {frame_index}."
+    )
+    return (
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        updated_points,
+        gr.update(interactive=count_frame_points(updated_points) > 0),
+        message,
+    )
+
+
+def clear_frame_refinement_edits(frame_num, tracked_video_preview, refinement_query_points):
+    if tracked_video_preview is None:
+        message = "Track a video before editing processed-frame points."
+        gr.Warning(message, duration=5)
+        return None, refinement_query_points, gr.update(interactive=False), message
+
+    frame_count = len(tracked_video_preview)
+    frame_index = int(np.clip(int(frame_num), 0, frame_count - 1))
+    refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
+    had_points = len(refinement_query_points[frame_index]) > 0
+    updated_points = clear_frame_refinement_points(refinement_query_points, frame_index)
+    message = (
+        f"Cleared refinement points on frame {frame_index}."
+        if had_points
+        else f"No refinement points to clear on frame {frame_index}."
+    )
+    return (
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        updated_points,
+        gr.update(interactive=count_frame_points(updated_points) > 0),
+        message,
+    )
+
+
+def clear_all_refinement_edits(frame_num, tracked_video_preview, refinement_query_points):
+    if tracked_video_preview is None:
+        message = "Track a video before editing processed-frame points."
+        gr.Warning(message, duration=5)
+        return None, refinement_query_points, gr.update(interactive=False), message
+
+    frame_count = len(tracked_video_preview)
+    frame_index = int(np.clip(int(frame_num), 0, frame_count - 1))
+    refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
+    had_points = count_frame_points(refinement_query_points) > 0
+    updated_points = clear_all_refinement_points(refinement_query_points)
+    message = "Cleared all refinement points." if had_points else "No refinement points to clear."
+    return (
+        choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        updated_points,
+        gr.update(interactive=False),
+        message,
+    )
 
 
 def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_frames):
@@ -516,6 +697,8 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         None,
         gr.update(minimum=0, maximum=0, value=0, interactive=False),
         None,
+        empty_frame_points(num_frames),
+        gr.update(interactive=False),
         load_status,
     )
 
@@ -646,6 +829,104 @@ def track(
         gr.update(interactive=has_selected_points),
         export_status,
     )
+
+
+def track_and_reset_refinements(
+    video_preview,
+    video_input,
+    video_fps,
+    query_points,
+    query_points_color,
+    query_count,
+):
+    result = track(
+        video_preview,
+        video_input,
+        video_fps,
+        query_points,
+        query_points_color,
+        query_count,
+    )
+    total_frame_count = video_input.shape[0]
+    return (
+        *result[:7],
+        empty_frame_points(total_frame_count),
+        gr.update(interactive=False),
+        *result[7:],
+    )
+
+
+def reprocess_with_refinements(
+    video_preview,
+    video_input,
+    video_fps,
+    query_points,
+    query_points_color,
+    refinement_query_points,
+    tracked_frame_num,
+):
+    if video_preview is None or video_input is None:
+        message = "Track a video before re-processing refinement points."
+        gr.Warning(message, duration=5)
+        return (
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            message,
+        )
+
+    frame_count = int(video_preview.shape[0])
+    refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
+    merged_query_points = merge_frame_point_lists(query_points, refinement_query_points)
+    merged_query_count = count_frame_points(merged_query_points)
+    if merged_query_count == 0:
+        message = "Add or select at least one point prompt before re-processing."
+        gr.Warning(message, duration=5)
+        return (
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            gr.update(),
+            message,
+        )
+
+    merged_query_colors = merge_query_point_colors(
+        query_points_color,
+        refinement_query_points,
+        frame_count,
+    )
+    result = list(
+        track(
+            video_preview,
+            video_input,
+            video_fps,
+            merged_query_points,
+            merged_query_colors,
+            merged_query_count,
+        )
+    )
+    frame_index = int(np.clip(int(tracked_frame_num), 0, frame_count - 1))
+    result[6] = choose_tracked_frame(frame_index, result[4], refinement_query_points)
+    result[-1] = (
+        f"Re-processing complete with {merged_query_count} point prompt(s). "
+        "Query points on video has been replaced."
+    )
+    return tuple(result)
 
 
 def store_frames_from_state(video_frames):
@@ -894,6 +1175,7 @@ with gr.Blocks() as demo:
     selected_visibility = gr.State(None)
     selected_point_labels = gr.State(None)
     tracked_video_preview = gr.State(None)
+    refinement_query_points = gr.State([])
 
     gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
     gr.Markdown("<div style='text-align: left;'> \
@@ -1023,10 +1305,28 @@ with gr.Blocks() as demo:
                 label="Choose Processed Frame",
                 interactive=False,
             )
+            with gr.Row():
+                refinement_point_type = gr.Radio(
+                    choices=list(POINT_TYPE_CHOICES),
+                    value=POSITIVE_POINT_CHOICE,
+                    label="Refinement Point Type",
+                    interactive=True,
+                )
+                refinement_edit_mode = gr.Radio(
+                    choices=list(REFINEMENT_EDIT_MODE_CHOICES),
+                    value=REFINEMENT_ADD_MODE,
+                    label="Refinement Edit Mode",
+                    interactive=True,
+                )
+            with gr.Row():
+                refinement_undo = gr.Button("Undo Frame Edit", interactive=True)
+                refinement_clear_frame = gr.Button("Clear Frame Edits", interactive=True)
+                refinement_clear_all = gr.Button("Clear All Edits", interactive=True)
+            reprocess_button = gr.Button("Re-process", interactive=False)
             tracked_frame_preview = gr.Image(
                 label="Query points on video",
                 type="numpy",
-                interactive=False,
+                interactive=True,
             )
         with gr.Column():
             processed_sam_model_dropdown = gr.Dropdown(
@@ -1078,6 +1378,8 @@ with gr.Blocks() as demo:
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
+            refinement_query_points,
+            reprocess_button,
             export_status,
         ],
         queue = False
@@ -1094,7 +1396,7 @@ with gr.Blocks() as demo:
 
     tracked_query_frames.change(
         fn = choose_tracked_frame,
-        inputs = [tracked_query_frames, tracked_video_preview],
+        inputs = [tracked_query_frames, tracked_video_preview, refinement_query_points],
         outputs = [
             tracked_frame_preview,
         ],
@@ -1181,7 +1483,7 @@ with gr.Blocks() as demo:
 
     
     track_button.click(
-        fn = track,
+        fn = track_and_reset_refinements,
         inputs = [
             video_preview,
             video_input,
@@ -1189,6 +1491,102 @@ with gr.Blocks() as demo:
             query_points,
             query_points_color,
             query_count,
+        ],
+        outputs = [
+            output_video,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            tracked_video_preview,
+            tracked_query_frames,
+            tracked_frame_preview,
+            refinement_query_points,
+            reprocess_button,
+            store_frames_button,
+            store_coordinates_button,
+            processed_sam_model_dropdown,
+            processed_sam_preview_button,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    tracked_frame_preview.select(
+        fn = edit_refinement_point,
+        inputs = [
+            tracked_query_frames,
+            refinement_edit_mode,
+            refinement_point_type,
+            tracked_video_preview,
+            refinement_query_points,
+        ],
+        outputs = [
+            tracked_frame_preview,
+            refinement_query_points,
+            reprocess_button,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    refinement_undo.click(
+        fn = undo_refinement_point,
+        inputs = [
+            tracked_query_frames,
+            tracked_video_preview,
+            refinement_query_points,
+        ],
+        outputs = [
+            tracked_frame_preview,
+            refinement_query_points,
+            reprocess_button,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    refinement_clear_frame.click(
+        fn = clear_frame_refinement_edits,
+        inputs = [
+            tracked_query_frames,
+            tracked_video_preview,
+            refinement_query_points,
+        ],
+        outputs = [
+            tracked_frame_preview,
+            refinement_query_points,
+            reprocess_button,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    refinement_clear_all.click(
+        fn = clear_all_refinement_edits,
+        inputs = [
+            tracked_query_frames,
+            tracked_video_preview,
+            refinement_query_points,
+        ],
+        outputs = [
+            tracked_frame_preview,
+            refinement_query_points,
+            reprocess_button,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    reprocess_button.click(
+        fn = reprocess_with_refinements,
+        inputs = [
+            video_preview,
+            video_input,
+            video_fps,
+            query_points,
+            query_points_color,
+            refinement_query_points,
+            tracked_query_frames,
         ],
         outputs = [
             output_video,
