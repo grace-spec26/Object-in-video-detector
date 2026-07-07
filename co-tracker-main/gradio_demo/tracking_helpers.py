@@ -35,21 +35,21 @@ def parse_max_frame_count(value) -> int:
     return max(0, max_frames)
 
 
-def parse_target_fps(value) -> float:
-    """Return a non-negative target FPS; 0 means keep the source frame rate."""
+def parse_frame_skip_count(value) -> int:
+    """Return a non-negative frame skip count; 0 means keep every frame."""
     if value is None:
-        return 0.0
+        return 0
     if isinstance(value, str):
         value = value.strip()
         if not value:
-            return 0.0
+            return 0
 
     try:
-        target_fps = float(value)
+        skip_count = int(float(value))
     except (TypeError, ValueError) as exc:
-        raise ValueError("Skip frame target FPS must be a number. Use 0 to keep the source FPS.") from exc
+        raise ValueError("Skip frame count must be a whole number. Use 0 to keep every frame.") from exc
 
-    return max(0.0, target_fps)
+    return max(0, skip_count)
 
 
 def _even(value: int) -> int:
@@ -88,22 +88,20 @@ def resize_video_for_tracking(video: np.ndarray, resolution_label: str) -> np.nd
     return np.stack(resized_frames, axis=0).astype(video_array.dtype, copy=False)
 
 
-def get_frame_sampling_stride(source_fps: float, target_fps: float) -> int:
-    """Map a target FPS to an integer keep-every-N-frames stride."""
-    if float(source_fps) <= 0:
-        raise ValueError("source_fps must be positive.")
-    if float(target_fps) <= 0:
-        return 1
-    return max(1, int(round(float(source_fps) / float(target_fps))))
+def get_frame_skip_stride(skip_count: int) -> int:
+    """Return the keep-every-N stride for a skip-after-each-frame count."""
+    return max(1, int(skip_count) + 1)
 
 
-def sample_video_for_target_fps(video: np.ndarray, source_fps: float, target_fps: float):
-    """Subsample a video to roughly match a requested FPS using integer frame strides."""
+def sample_video_for_frame_skip(video: np.ndarray, source_fps: float, skip_count: int):
+    """Keep one frame, skip skip_count frames, and repeat."""
     video_array = np.asarray(video)
     if video_array.ndim != 4:
         raise ValueError("Video must have shape (T, H, W, C).")
+    if float(source_fps) <= 0:
+        raise ValueError("source_fps must be positive.")
 
-    stride = get_frame_sampling_stride(source_fps, target_fps)
+    stride = get_frame_skip_stride(skip_count)
     if stride == 1:
         return video_array, float(source_fps), stride
     return video_array[::stride], float(source_fps) / float(stride), stride
