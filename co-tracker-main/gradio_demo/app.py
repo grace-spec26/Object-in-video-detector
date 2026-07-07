@@ -403,6 +403,14 @@ def choose_frame(frame_num, video_preview_array):
     return video_preview_array[int(frame_num)]
 
 
+def choose_tracked_frame(frame_num, tracked_video_preview):
+    if tracked_video_preview is None:
+        return None
+
+    frame_index = int(np.clip(int(frame_num), 0, len(tracked_video_preview) - 1))
+    return tracked_video_preview[frame_index]
+
+
 def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_frames):
     if video_path is None:
         raise gr.Error("Please upload a video before submitting.")
@@ -501,6 +509,9 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         gr.update(interactive=False),
         gr.update(interactive=False),
         gr.update(interactive=False),
+        None,
+        None,
+        gr.update(minimum=0, maximum=0, value=0, interactive=False),
         None,
         load_status,
     )
@@ -623,6 +634,9 @@ def track(
         tracks if has_selected_points else None,
         pred_occ if has_selected_points else None,
         selected_point_labels if has_selected_points else None,
+        painted_video,
+        gr.update(minimum=0, maximum=total_frame_count - 1, value=0, interactive=True),
+        painted_video[0],
         gr.update(interactive=True),
         gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
@@ -750,6 +764,7 @@ def preview_sam_on_frame(
     selected_point_labels,
     frame_num,
     sam_model,
+    prefer_tracked_points=False,
 ):
     if video_frames is None or video_preview_array is None:
         message = "Submit a video before previewing SAM."
@@ -757,14 +772,39 @@ def preview_sam_on_frame(
         return None, message
 
     frame_index = int(np.clip(int(frame_num), 0, len(video_frames) - 1))
-    point_coords, point_labels = labeled_query_points_for_frame(
-        query_points,
-        frame_index,
-        source_hw=video_preview_array.shape[1:3],
-        target_hw=video_frames.shape[1:3],
-    )
+    point_coords = np.empty((0, 2), dtype=np.float32)
+    point_labels = np.empty((0,), dtype=np.int32)
     prompt_source = "selected"
-    if len(point_coords) == 0 and selected_tracks is not None and selected_point_labels is not None:
+
+    if prefer_tracked_points and selected_tracks is not None and selected_point_labels is not None:
+        scaled_tracks = scale_tracks_to_frame_space(
+            selected_tracks,
+            source_hw=video_preview_array.shape[1:3],
+            target_hw=video_frames.shape[1:3],
+        )
+        point_coords, point_labels = visible_labeled_points_for_frame(
+            scaled_tracks,
+            frame_index,
+            point_labels=selected_point_labels,
+            visibility=selected_visibility,
+        )
+        prompt_source = "tracked"
+
+    if len(point_coords) == 0:
+        point_coords, point_labels = labeled_query_points_for_frame(
+            query_points,
+            frame_index,
+            source_hw=video_preview_array.shape[1:3],
+            target_hw=video_frames.shape[1:3],
+        )
+        prompt_source = "selected"
+
+    if (
+        len(point_coords) == 0
+        and not prefer_tracked_points
+        and selected_tracks is not None
+        and selected_point_labels is not None
+    ):
         scaled_tracks = scale_tracks_to_frame_space(
             selected_tracks,
             source_hw=video_preview_array.shape[1:3],
@@ -809,6 +849,33 @@ def preview_sam_on_frame(
     )
 
 
+def preview_sam_for_selected_frame(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+):
+    has_processed_selection = tracked_video_preview is not None and selected_tracks is not None
+    frame_num = tracked_frame_num if has_processed_selection else query_frame_num
+    return preview_sam_on_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_num,
+        sam_model,
+        prefer_tracked_points=has_processed_selection,
+    )
+
+
 with gr.Blocks() as demo:
     video = gr.State()
     video_queried_preview = gr.State()
@@ -823,6 +890,7 @@ with gr.Blocks() as demo:
     selected_tracks = gr.State(None)
     selected_visibility = gr.State(None)
     selected_point_labels = gr.State(None)
+    tracked_video_preview = gr.State(None)
 
     gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
     gr.Markdown("<div style='text-align: left;'> \
@@ -927,16 +995,33 @@ with gr.Blocks() as demo:
                 interactive=False,
                 lines=3,
             )
-            with gr.Row():
-                sam_model_dropdown = gr.Dropdown(
-                    choices=list(SAM_IMAGE_MODEL_CHOICES),
-                    value=DEFAULT_SAM_IMAGE_MODEL,
-                    label="SAM Image Model",
-                    interactive=False,
-                )
-                sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
+
+    gr.Markdown("## Third step: Fine-tune point adjustment of cotracker and Preview effect of SAM on processed video.")
+    with gr.Row():
+        with gr.Column():
+            sam_model_dropdown = gr.Dropdown(
+                choices=list(SAM_IMAGE_MODEL_CHOICES),
+                value=DEFAULT_SAM_IMAGE_MODEL,
+                label="SAM Image Model",
+                interactive=False,
+            )
+            sam_preview_button = gr.Button("Preview SAM on Selected Frame", interactive=False)
             sam_preview_image = gr.Image(
-                label="SAM Point Preview",
+                label="SAM point preview",
+                type="numpy",
+                interactive=False,
+            )
+        with gr.Column():
+            tracked_query_frames = gr.Slider(
+                minimum=0,
+                maximum=0,
+                value=0,
+                step=1,
+                label="Choose Processed Frame",
+                interactive=False,
+            )
+            tracked_frame_preview = gr.Image(
+                label="Query points on video",
                 type="numpy",
                 interactive=False,
             )
@@ -971,6 +1056,9 @@ with gr.Blocks() as demo:
             sam_model_dropdown,
             sam_preview_button,
             sam_preview_image,
+            tracked_video_preview,
+            tracked_query_frames,
+            tracked_frame_preview,
             export_status,
         ],
         queue = False
@@ -981,6 +1069,15 @@ with gr.Blocks() as demo:
         inputs = [query_frames, video_queried_preview],
         outputs = [
             current_frame,
+        ],
+        queue = False
+    )
+
+    tracked_query_frames.change(
+        fn = choose_tracked_frame,
+        inputs = [tracked_query_frames, tracked_video_preview],
+        outputs = [
+            tracked_frame_preview,
         ],
         queue = False
     )
@@ -1079,6 +1176,9 @@ with gr.Blocks() as demo:
             selected_tracks,
             selected_visibility,
             selected_point_labels,
+            tracked_video_preview,
+            tracked_query_frames,
+            tracked_frame_preview,
             store_frames_button,
             store_coordinates_button,
             sam_model_dropdown,
@@ -1115,7 +1215,7 @@ with gr.Blocks() as demo:
     )
 
     sam_preview_button.click(
-        fn = preview_sam_on_frame,
+        fn = preview_sam_for_selected_frame,
         inputs = [
             video,
             video_preview,
@@ -1124,6 +1224,8 @@ with gr.Blocks() as demo:
             selected_visibility,
             selected_point_labels,
             query_frames,
+            tracked_query_frames,
+            tracked_video_preview,
             sam_model_dropdown,
         ],
         outputs = [

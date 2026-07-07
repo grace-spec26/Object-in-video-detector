@@ -30,7 +30,7 @@ class GradioAppWiringTest(unittest.TestCase):
         match = re.search(r"sam_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
 
         self.assertIsNotNone(match)
-        self.assertIn("fn = preview_sam_on_frame", match.group(1))
+        self.assertIn("fn = preview_sam_for_selected_frame", match.group(1))
         self.assertIn("query_points", match.group(1))
         self.assertIn("selected_point_labels", match.group(1))
         self.assertIn("sam_model_dropdown", match.group(1))
@@ -67,6 +67,36 @@ class GradioAppWiringTest(unittest.TestCase):
 
         self.assertIsNotNone(match)
         self.assertIn("skip_frames_input", match.group(1))
+
+    def test_third_step_has_processed_frame_and_sam_preview_blocks(self):
+        app_source = APP_PATH.read_text()
+
+        self.assertIn(
+            '## Third step: Fine-tune point adjustment of cotracker and Preview effect of SAM on processed video.',
+            app_source,
+        )
+        self.assertIn("tracked_query_frames = gr.Slider", app_source)
+        self.assertIn('label="Choose Processed Frame"', app_source)
+        self.assertIn('label="Query points on video"', app_source)
+        self.assertIn('label="SAM point preview"', app_source)
+
+    def test_track_populates_processed_frame_preview(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"track_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("tracked_video_preview", match.group(1))
+        self.assertIn("tracked_query_frames", match.group(1))
+        self.assertIn("tracked_frame_preview", match.group(1))
+
+    def test_sam_preview_uses_processed_frame_selection_after_tracking(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"sam_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("query_frames", match.group(1))
+        self.assertIn("tracked_query_frames", match.group(1))
+        self.assertIn("tracked_video_preview", match.group(1))
 
 
 if __name__ == "__main__":
