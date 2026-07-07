@@ -1015,19 +1015,6 @@ with gr.Blocks() as demo:
     gr.Markdown("## Third step: Fine-tune point adjustment of cotracker and Preview effect of SAM on processed video.")
     with gr.Row():
         with gr.Column():
-            processed_sam_model_dropdown = gr.Dropdown(
-                choices=list(SAM_IMAGE_MODEL_CHOICES),
-                value=DEFAULT_SAM_IMAGE_MODEL,
-                label="SAM Image Model",
-                interactive=False,
-            )
-            processed_sam_preview_button = gr.Button("Preview SAM on Selected Frame", interactive=False)
-            processed_sam_preview_image = gr.Image(
-                label="SAM point preview",
-                type="numpy",
-                interactive=False,
-            )
-        with gr.Column():
             tracked_query_frames = gr.Slider(
                 minimum=0,
                 maximum=0,
@@ -1038,6 +1025,19 @@ with gr.Blocks() as demo:
             )
             tracked_frame_preview = gr.Image(
                 label="Query points on video",
+                type="numpy",
+                interactive=False,
+            )
+        with gr.Column():
+            processed_sam_model_dropdown = gr.Dropdown(
+                choices=list(SAM_IMAGE_MODEL_CHOICES),
+                value=DEFAULT_SAM_IMAGE_MODEL,
+                label="SAM Image Model",
+                interactive=False,
+            )
+            processed_sam_preview_button = gr.Button("Preview SAM on Selected Frame", interactive=False)
+            processed_sam_preview_image = gr.Image(
+                label="SAM point preview",
                 type="numpy",
                 interactive=False,
             )

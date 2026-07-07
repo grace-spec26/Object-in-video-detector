@@ -92,6 +92,15 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn('label="Query points on video"', app_source)
         self.assertIn('label="SAM point preview"', app_source)
 
+    def test_third_step_shows_tracked_frame_block_before_processed_sam_block(self):
+        app_source = APP_PATH.read_text()
+        third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
+
+        self.assertLess(
+            third_step_block.index("tracked_query_frames = gr.Slider"),
+            third_step_block.index("processed_sam_model_dropdown = gr.Dropdown"),
+        )
+
     def test_track_populates_processed_frame_preview(self):
         app_source = APP_PATH.read_text()
         match = re.search(r"track_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
