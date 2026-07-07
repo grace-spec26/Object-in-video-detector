@@ -510,6 +510,9 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         gr.update(interactive=False),
         gr.update(interactive=False),
         None,
+        gr.update(interactive=False),
+        gr.update(interactive=False),
+        None,
         None,
         gr.update(minimum=0, maximum=0, value=0, interactive=False),
         None,
@@ -973,6 +976,19 @@ with gr.Blocks() as demo:
                     type="numpy",
                     interactive=False
                 )
+            with gr.Row():
+                sam_model_dropdown = gr.Dropdown(
+                    choices=list(SAM_IMAGE_MODEL_CHOICES),
+                    value=DEFAULT_SAM_IMAGE_MODEL,
+                    label="SAM Image Model",
+                    interactive=False,
+                )
+                sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
+            sam_preview_image = gr.Image(
+                label="SAM point preview",
+                type="numpy",
+                interactive=False,
+            )
             
             with gr.Row():
                 track_button = gr.Button("Track", interactive=False)
@@ -999,14 +1015,14 @@ with gr.Blocks() as demo:
     gr.Markdown("## Third step: Fine-tune point adjustment of cotracker and Preview effect of SAM on processed video.")
     with gr.Row():
         with gr.Column():
-            sam_model_dropdown = gr.Dropdown(
+            processed_sam_model_dropdown = gr.Dropdown(
                 choices=list(SAM_IMAGE_MODEL_CHOICES),
                 value=DEFAULT_SAM_IMAGE_MODEL,
                 label="SAM Image Model",
                 interactive=False,
             )
-            sam_preview_button = gr.Button("Preview SAM on Selected Frame", interactive=False)
-            sam_preview_image = gr.Image(
+            processed_sam_preview_button = gr.Button("Preview SAM on Selected Frame", interactive=False)
+            processed_sam_preview_image = gr.Image(
                 label="SAM point preview",
                 type="numpy",
                 interactive=False,
@@ -1056,6 +1072,9 @@ with gr.Blocks() as demo:
             sam_model_dropdown,
             sam_preview_button,
             sam_preview_image,
+            processed_sam_model_dropdown,
+            processed_sam_preview_button,
+            processed_sam_preview_image,
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
@@ -1181,8 +1200,8 @@ with gr.Blocks() as demo:
             tracked_frame_preview,
             store_frames_button,
             store_coordinates_button,
-            sam_model_dropdown,
-            sam_preview_button,
+            processed_sam_model_dropdown,
+            processed_sam_preview_button,
             export_status,
         ],
         queue = False,
@@ -1215,6 +1234,25 @@ with gr.Blocks() as demo:
     )
 
     sam_preview_button.click(
+        fn = preview_sam_on_frame,
+        inputs = [
+            video,
+            video_preview,
+            query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            query_frames,
+            sam_model_dropdown,
+        ],
+        outputs = [
+            sam_preview_image,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    processed_sam_preview_button.click(
         fn = preview_sam_for_selected_frame,
         inputs = [
             video,
@@ -1226,10 +1264,10 @@ with gr.Blocks() as demo:
             query_frames,
             tracked_query_frames,
             tracked_video_preview,
-            sam_model_dropdown,
+            processed_sam_model_dropdown,
         ],
         outputs = [
-            sam_preview_image,
+            processed_sam_preview_image,
             export_status,
         ],
         queue = False,
