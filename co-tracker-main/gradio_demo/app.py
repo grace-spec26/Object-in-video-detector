@@ -1334,6 +1334,7 @@ def preview_sam_on_frame(
     frame_num,
     sam_model,
     prefer_tracked_points=False,
+    refinement_query_points=None,
 ):
     if video_frames is None or video_preview_array is None:
         message = "Submit a video before previewing SAM."
@@ -1387,6 +1388,22 @@ def preview_sam_on_frame(
         )
         prompt_source = "tracked"
 
+    refinement_coords, refinement_labels = labeled_query_points_for_frame(
+        refinement_query_points,
+        frame_index,
+        source_hw=video_preview_array.shape[1:3],
+        target_hw=video_frames.shape[1:3],
+    )
+    if len(refinement_coords) > 0:
+        if len(point_coords) > 0:
+            point_coords = np.concatenate([point_coords, refinement_coords], axis=0)
+            point_labels = np.concatenate([point_labels, refinement_labels], axis=0)
+            prompt_source = f"{prompt_source} + refinement"
+        else:
+            point_coords = refinement_coords
+            point_labels = refinement_labels
+            prompt_source = "refinement"
+
     if len(point_coords) == 0:
         message = f"No selected or visible tracked points on frame {frame_index}."
         gr.Warning(message, duration=5)
@@ -1429,6 +1446,7 @@ def preview_sam_for_selected_frame(
     tracked_frame_num,
     tracked_video_preview,
     sam_model,
+    refinement_query_points=None,
 ):
     has_processed_selection = tracked_video_preview is not None and selected_tracks is not None
     frame_num = tracked_frame_num if has_processed_selection else query_frame_num
@@ -1442,6 +1460,7 @@ def preview_sam_for_selected_frame(
         frame_num,
         sam_model,
         prefer_tracked_points=has_processed_selection,
+        refinement_query_points=refinement_query_points,
     )
 
 
@@ -1968,6 +1987,7 @@ with gr.Blocks() as demo:
             tracked_query_frames,
             tracked_video_preview,
             processed_sam_model_dropdown,
+            refinement_query_points,
         ],
         outputs = [
             processed_sam_preview_image,

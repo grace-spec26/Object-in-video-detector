@@ -189,6 +189,21 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("tracked_video_preview", match.group(1))
         self.assertIn("processed_sam_model_dropdown", match.group(1))
 
+    def test_processed_sam_preview_reads_third_step_refinement_points(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"processed_sam_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("refinement_query_points", match.group(1))
+        self.assertRegex(
+            app_source,
+            r"def preview_sam_for_selected_frame\([^)]*refinement_query_points",
+        )
+        self.assertRegex(
+            app_source,
+            r"def preview_sam_on_frame\([^)]*refinement_query_points",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
