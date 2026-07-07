@@ -123,7 +123,14 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn('refinement_clear_all = gr.Button("Clear All Edits"', third_step_block)
         self.assertIn('reprocess_button = gr.Button("Re-process"', third_step_block)
         self.assertIn("tracked_frame_preview = gr.Image", third_step_block)
-        self.assertIn("interactive=True", third_step_block)
+
+    def test_processed_frame_click_target_is_display_image_like_query_picker(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"tracked_frame_preview = gr\.Image\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn('label="Query points on video"', match.group(1))
+        self.assertIn("interactive=False", match.group(1))
 
     def test_processed_frame_click_adds_or_deletes_refinement_points(self):
         app_source = APP_PATH.read_text()

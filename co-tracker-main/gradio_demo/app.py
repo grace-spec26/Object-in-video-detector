@@ -1326,7 +1326,7 @@ with gr.Blocks() as demo:
             tracked_frame_preview = gr.Image(
                 label="Query points on video",
                 type="numpy",
-                interactive=True,
+                interactive=False,
             )
         with gr.Column():
             processed_sam_model_dropdown = gr.Dropdown(
