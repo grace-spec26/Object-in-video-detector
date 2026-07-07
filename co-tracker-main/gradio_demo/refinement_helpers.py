@@ -11,6 +11,10 @@ def copy_frame_points(points_by_frame):
     return [[_point_tuple(point) for point in frame_points] for frame_points in (points_by_frame or [])]
 
 
+def copy_frame_values(values_by_frame):
+    return [list(frame_values) for frame_values in (values_by_frame or [])]
+
+
 def empty_frame_points(frame_count):
     return [[] for _ in range(max(0, int(frame_count)))]
 
@@ -79,6 +83,86 @@ def merge_frame_point_lists(base_points, refinement_points):
     base = ensure_frame_points(base, frame_count)
     refinements = ensure_frame_points(refinements, frame_count)
     return [base_frame + refinement_frame for base_frame, refinement_frame in zip(base, refinements)]
+
+
+def flatten_prompt_sources(base_points, refinement_points=None):
+    base = copy_frame_points(base_points)
+    refinements = copy_frame_points(refinement_points)
+    frame_count = max(len(base), len(refinements))
+    base = ensure_frame_points(base, frame_count)
+    refinements = ensure_frame_points(refinements, frame_count)
+
+    sources = []
+    for frame_index in range(frame_count):
+        sources.extend(("base", frame_index, point_index) for point_index in range(len(base[frame_index])))
+        sources.extend(
+            ("refinement", frame_index, point_index)
+            for point_index in range(len(refinements[frame_index]))
+        )
+    return sources
+
+
+def remove_prompt_by_source(base_points, base_colors, refinement_points, source):
+    base = copy_frame_points(base_points)
+    colors = copy_frame_values(base_colors)
+    refinements = copy_frame_points(refinement_points)
+    frame_count = max(len(base), len(colors), len(refinements))
+    base = ensure_frame_points(base, frame_count)
+    refinements = ensure_frame_points(refinements, frame_count)
+    while len(colors) < frame_count:
+        colors.append([])
+    colors = colors[:frame_count]
+
+    kind, frame_index, point_index = source
+    frame_index = int(frame_index)
+    point_index = int(point_index)
+    if frame_index < 0 or frame_index >= frame_count or point_index < 0:
+        return base, colors, refinements, False
+
+    if str(kind) == "base":
+        if point_index >= len(base[frame_index]):
+            return base, colors, refinements, False
+        del base[frame_index][point_index]
+        if point_index < len(colors[frame_index]):
+            del colors[frame_index][point_index]
+        return base, colors, refinements, True
+
+    if str(kind) == "refinement":
+        if point_index >= len(refinements[frame_index]):
+            return base, colors, refinements, False
+        del refinements[frame_index][point_index]
+        return base, colors, refinements, True
+
+    return base, colors, refinements, False
+
+
+def drop_prompt_source(prompt_sources, removed_index):
+    sources = [tuple(source) for source in (prompt_sources or [])]
+    removed_index = int(removed_index)
+    if removed_index < 0 or removed_index >= len(sources):
+        return sources
+
+    removed_kind, removed_frame, removed_point_index = sources[removed_index]
+    removed_kind = str(removed_kind)
+    removed_frame = int(removed_frame)
+    removed_point_index = int(removed_point_index)
+    updated = []
+    for index, source in enumerate(sources):
+        if index == removed_index:
+            continue
+
+        kind, frame_index, point_index = source
+        kind = str(kind)
+        frame_index = int(frame_index)
+        point_index = int(point_index)
+        if (
+            kind == removed_kind
+            and frame_index == removed_frame
+            and point_index > removed_point_index
+        ):
+            point_index -= 1
+        updated.append((kind, frame_index, point_index))
+    return updated
 
 
 def count_frame_points(points_by_frame):

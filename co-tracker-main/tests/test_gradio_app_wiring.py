@@ -143,6 +143,23 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("refinement_query_points", match.group(1))
         self.assertIn("reprocess_button", match.group(1))
 
+    def test_processed_frame_delete_can_update_original_tracked_prompt_state(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"tracked_frame_preview\.select\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        for state_name in (
+            "query_points",
+            "query_points_color",
+            "query_count",
+            "selected_tracks",
+            "selected_visibility",
+            "selected_point_labels",
+            "tracked_prompt_sources",
+            "tracked_video_preview",
+        ):
+            self.assertIn(state_name, match.group(1))
+
     def test_reprocess_button_uses_refinement_points_and_replaces_processed_video(self):
         app_source = APP_PATH.read_text()
         match = re.search(r"reprocess_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
@@ -153,6 +170,7 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("refinement_query_points", match.group(1))
         self.assertIn("tracked_video_preview", match.group(1))
         self.assertIn("tracked_frame_preview", match.group(1))
+        self.assertIn("tracked_prompt_sources", match.group(1))
 
     def test_refinement_edit_callbacks_enable_reprocess_when_any_edits_remain(self):
         app_source = APP_PATH.read_text()

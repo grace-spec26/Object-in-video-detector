@@ -42,10 +42,13 @@ try:
         clear_all_refinement_points,
         clear_frame_refinement_points,
         count_frame_points,
+        drop_prompt_source,
         empty_frame_points,
         ensure_frame_points,
+        flatten_prompt_sources,
         merge_frame_point_lists,
         pop_refinement_point,
+        remove_prompt_by_source,
         remove_nearest_refinement_point,
     )
     from .tracking_helpers import (
@@ -78,10 +81,13 @@ except ImportError:
         clear_all_refinement_points,
         clear_frame_refinement_points,
         count_frame_points,
+        drop_prompt_source,
         empty_frame_points,
         ensure_frame_points,
+        flatten_prompt_sources,
         merge_frame_point_lists,
         pop_refinement_point,
+        remove_prompt_by_source,
         remove_nearest_refinement_point,
     )
     from tracking_helpers import (
@@ -474,37 +480,297 @@ def merge_query_point_colors(query_points_color, refinement_query_points, frame_
     ]
 
 
+def normalized_prompt_sources(prompt_sources):
+    return [tuple(source) for source in (prompt_sources or [])]
+
+
+def prompt_sources_for_tracks(query_points, refinement_query_points, selected_tracks, tracked_prompt_sources):
+    if selected_tracks is None:
+        return []
+
+    track_count = int(np.asarray(selected_tracks).shape[0])
+    sources = normalized_prompt_sources(tracked_prompt_sources)
+    if len(sources) == track_count:
+        return sources
+
+    base_sources = flatten_prompt_sources(query_points, None)
+    if len(base_sources) == track_count:
+        return base_sources
+
+    merged_sources = flatten_prompt_sources(query_points, refinement_query_points)
+    if len(merged_sources) >= track_count:
+        return merged_sources[:track_count]
+    return sources
+
+
+def color_for_prompt_source(query_points_color, refinement_query_points, source):
+    kind, frame_index, point_index = source
+    kind = str(kind)
+    frame_index = int(frame_index)
+    point_index = int(point_index)
+    if kind == "base":
+        if (
+            query_points_color is not None
+            and 0 <= frame_index < len(query_points_color)
+            and 0 <= point_index < len(query_points_color[frame_index])
+        ):
+            return tuple(query_points_color[frame_index][point_index])
+        return POINT_COLORS[1]
+
+    refinement_query_points = ensure_frame_points(
+        refinement_query_points,
+        max(len(refinement_query_points or []), frame_index + 1),
+    )
+    if 0 <= frame_index < len(refinement_query_points) and 0 <= point_index < len(refinement_query_points[frame_index]):
+        _, _, _, point_label = unpack_query_point(refinement_query_points[frame_index][point_index])
+        return POINT_COLORS.get(point_label, POINT_COLORS[1])
+    return POINT_COLORS[1]
+
+
+def colors_for_prompt_sources(query_points_color, refinement_query_points, prompt_sources):
+    return np.asarray(
+        [
+            color_for_prompt_source(query_points_color, refinement_query_points, source)
+            for source in normalized_prompt_sources(prompt_sources)
+        ],
+        dtype=np.uint8,
+    )
+
+
+def nearest_visible_track_index(selected_tracks, selected_visibility, frame_index, x, y, max_distance):
+    if selected_tracks is None:
+        return None, None
+
+    tracks = np.asarray(selected_tracks)
+    if tracks.ndim != 3 or tracks.shape[0] == 0:
+        return None, None
+
+    frame_index = int(np.clip(int(frame_index), 0, tracks.shape[1] - 1))
+    if selected_visibility is None:
+        visible = np.ones((tracks.shape[0],), dtype=bool)
+    else:
+        visibility = np.asarray(selected_visibility)
+        if visibility.shape[:2] != tracks.shape[:2]:
+            visible = np.ones((tracks.shape[0],), dtype=bool)
+        else:
+            visible = visibility[:, frame_index].astype(bool)
+
+    visible_indices = np.flatnonzero(visible)
+    if len(visible_indices) == 0:
+        return None, None
+
+    frame_tracks = tracks[visible_indices, frame_index, :]
+    distances = np.linalg.norm(frame_tracks - np.asarray([x, y], dtype=np.float32), axis=1)
+    nearest_visible_index = int(np.argmin(distances))
+    nearest_distance = float(distances[nearest_visible_index])
+    if nearest_distance > float(max_distance):
+        return None, None
+    return int(visible_indices[nearest_visible_index]), nearest_distance
+
+
+def remove_track_prompt_from_state(
+    query_points,
+    query_points_color,
+    refinement_query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    tracked_prompt_sources,
+    track_index,
+):
+    sources = normalized_prompt_sources(tracked_prompt_sources)
+    track_index = int(track_index)
+    if track_index < 0 or track_index >= len(sources):
+        return (
+            query_points,
+            query_points_color,
+            refinement_query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            sources,
+            False,
+        )
+
+    updated_query_points, updated_query_colors, updated_refinements, removed = remove_prompt_by_source(
+        query_points,
+        query_points_color,
+        refinement_query_points,
+        sources[track_index],
+    )
+    if not removed:
+        return (
+            query_points,
+            query_points_color,
+            refinement_query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            sources,
+            False,
+        )
+
+    updated_tracks = np.delete(np.asarray(selected_tracks), track_index, axis=0)
+    updated_visibility = (
+        np.delete(np.asarray(selected_visibility), track_index, axis=0)
+        if selected_visibility is not None
+        else selected_visibility
+    )
+    updated_labels = list(selected_point_labels or [])
+    if track_index < len(updated_labels):
+        del updated_labels[track_index]
+    updated_sources = drop_prompt_source(sources, track_index)
+    return (
+        updated_query_points,
+        updated_query_colors,
+        updated_refinements,
+        updated_tracks,
+        updated_visibility,
+        updated_labels,
+        updated_sources,
+        True,
+    )
+
+
+def repaint_tracked_video_preview(
+    video_preview,
+    selected_tracks,
+    selected_visibility,
+    query_points_color,
+    refinement_query_points,
+    tracked_prompt_sources,
+):
+    if video_preview is None:
+        return None
+    if selected_tracks is None:
+        return video_preview
+
+    tracks = np.asarray(selected_tracks)
+    if tracks.ndim != 3 or tracks.shape[0] == 0:
+        return np.asarray(video_preview).copy()
+
+    colors = colors_for_prompt_sources(query_points_color, refinement_query_points, tracked_prompt_sources)
+    visibility = (
+        np.asarray(selected_visibility)
+        if selected_visibility is not None
+        else np.ones(tracks.shape[:2], dtype=bool)
+    )
+    return paint_point_track(
+        np.asarray(video_preview),
+        tracks,
+        visibility,
+        colors,
+    )
+
+
 def edit_refinement_point(
     frame_num,
     refinement_edit_mode,
     refinement_point_type,
+    video_preview,
     tracked_video_preview,
+    query_points,
+    query_points_color,
+    query_count,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    tracked_prompt_sources,
     refinement_query_points,
     evt: gr.SelectData,
 ):
     if tracked_video_preview is None:
         message = "Track a video before editing processed-frame points."
         gr.Warning(message, duration=5)
-        return None, refinement_query_points, gr.update(interactive=False), message
+        return (
+            None,
+            tracked_video_preview,
+            query_points,
+            query_points_color,
+            query_count,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            tracked_prompt_sources,
+            refinement_query_points,
+            gr.update(interactive=False),
+            message,
+        )
 
     frame_count = len(tracked_video_preview)
     frame_index = int(np.clip(int(frame_num), 0, frame_count - 1))
     refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
+    tracked_prompt_sources = prompt_sources_for_tracks(
+        query_points,
+        refinement_query_points,
+        selected_tracks,
+        tracked_prompt_sources,
+    )
     x, y = evt.index
 
     if str(refinement_edit_mode) == REFINEMENT_DELETE_MODE:
+        max_distance = max(18.0, POINT_PROMPT_RADIUS * 6.0)
+        track_index, _ = nearest_visible_track_index(
+            selected_tracks,
+            selected_visibility,
+            frame_index=frame_index,
+            x=x,
+            y=y,
+            max_distance=max_distance,
+        )
+        if track_index is not None:
+            (
+                updated_query_points,
+                updated_query_colors,
+                updated_points,
+                updated_tracks,
+                updated_visibility,
+                updated_labels,
+                updated_sources,
+                removed,
+            ) = remove_track_prompt_from_state(
+                query_points,
+                query_points_color,
+                refinement_query_points,
+                selected_tracks,
+                selected_visibility,
+                selected_point_labels,
+                tracked_prompt_sources,
+                track_index,
+            )
+            if removed:
+                updated_tracked_video = repaint_tracked_video_preview(
+                    video_preview,
+                    updated_tracks,
+                    updated_visibility,
+                    updated_query_colors,
+                    updated_points,
+                    updated_sources,
+                )
+                editable_prompt_count = count_frame_points(updated_query_points) + count_frame_points(updated_points)
+                return (
+                    choose_tracked_frame(frame_index, updated_tracked_video, updated_points),
+                    updated_tracked_video,
+                    updated_query_points,
+                    updated_query_colors,
+                    count_frame_points(updated_query_points),
+                    updated_tracks,
+                    updated_visibility,
+                    updated_labels,
+                    updated_sources,
+                    updated_points,
+                    gr.update(interactive=editable_prompt_count > 0),
+                    f"Removed tracked point prompt on frame {frame_index}; it is deleted from all processed frames.",
+                )
+
         updated_points, removed = remove_nearest_refinement_point(
             refinement_query_points,
             frame_index=frame_index,
             x=x,
             y=y,
-            max_distance=max(12.0, POINT_PROMPT_RADIUS * 4.0),
+            max_distance=max_distance,
         )
-        message = (
-            f"Removed refinement point on frame {frame_index}."
-            if removed
-            else f"No refinement point near click on frame {frame_index}."
-        )
+        message = f"Removed refinement point on frame {frame_index}." if removed else f"No editable point near click on frame {frame_index}."
     else:
         point_label = point_label_from_choice(refinement_point_type)
         updated_points = append_refinement_point(
@@ -519,8 +785,16 @@ def edit_refinement_point(
 
     return (
         choose_tracked_frame(frame_index, tracked_video_preview, updated_points),
+        tracked_video_preview,
+        query_points,
+        query_points_color,
+        query_count,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        tracked_prompt_sources,
         updated_points,
-        gr.update(interactive=count_frame_points(updated_points) > 0),
+        gr.update(interactive=(count_frame_points(query_points) + count_frame_points(updated_points)) > 0),
         message,
     )
 
@@ -686,6 +960,7 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         None,
         None,
         None,
+        [],
         gr.update(interactive=False),
         gr.update(interactive=False),
         gr.update(interactive=False),
@@ -848,8 +1123,11 @@ def track_and_reset_refinements(
         query_count,
     )
     total_frame_count = video_input.shape[0]
+    tracked_prompt_sources = flatten_prompt_sources(query_points, None) if query_count > 0 else []
     return (
-        *result[:7],
+        *result[:4],
+        tracked_prompt_sources,
+        *result[4:7],
         empty_frame_points(total_frame_count),
         gr.update(interactive=False),
         *result[7:],
@@ -880,6 +1158,7 @@ def reprocess_with_refinements(
             gr.update(),
             gr.update(),
             gr.update(),
+            gr.update(),
             message,
         )
 
@@ -891,6 +1170,7 @@ def reprocess_with_refinements(
         message = "Add or select at least one point prompt before re-processing."
         gr.Warning(message, duration=5)
         return (
+            gr.update(),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -926,7 +1206,12 @@ def reprocess_with_refinements(
         f"Re-processing complete with {merged_query_count} point prompt(s). "
         "Query points on video has been replaced."
     )
-    return tuple(result)
+    tracked_prompt_sources = flatten_prompt_sources(query_points, refinement_query_points)
+    return (
+        *result[:4],
+        tracked_prompt_sources,
+        *result[4:],
+    )
 
 
 def store_frames_from_state(video_frames):
@@ -1174,6 +1459,7 @@ with gr.Blocks() as demo:
     selected_tracks = gr.State(None)
     selected_visibility = gr.State(None)
     selected_point_labels = gr.State(None)
+    tracked_prompt_sources = gr.State([])
     tracked_video_preview = gr.State(None)
     refinement_query_points = gr.State([])
 
@@ -1367,6 +1653,7 @@ with gr.Blocks() as demo:
             selected_tracks,
             selected_visibility,
             selected_point_labels,
+            tracked_prompt_sources,
             store_frames_button,
             store_coordinates_button,
             sam_model_dropdown,
@@ -1497,6 +1784,7 @@ with gr.Blocks() as demo:
             selected_tracks,
             selected_visibility,
             selected_point_labels,
+            tracked_prompt_sources,
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
@@ -1517,11 +1805,27 @@ with gr.Blocks() as demo:
             tracked_query_frames,
             refinement_edit_mode,
             refinement_point_type,
+            video_preview,
             tracked_video_preview,
+            query_points,
+            query_points_color,
+            query_count,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            tracked_prompt_sources,
             refinement_query_points,
         ],
         outputs = [
             tracked_frame_preview,
+            tracked_video_preview,
+            query_points,
+            query_points_color,
+            query_count,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            tracked_prompt_sources,
             refinement_query_points,
             reprocess_button,
             export_status,
@@ -1593,6 +1897,7 @@ with gr.Blocks() as demo:
             selected_tracks,
             selected_visibility,
             selected_point_labels,
+            tracked_prompt_sources,
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
