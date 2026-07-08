@@ -65,6 +65,7 @@ try:
         resolve_torch_device,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
+        should_process_frame_for_skip,
         subsample_video_tensor,
     )
 except ImportError:
@@ -105,6 +106,7 @@ except ImportError:
         resolve_torch_device,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
+        should_process_frame_for_skip,
         subsample_video_tensor,
     )
 
@@ -977,6 +979,7 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         gr.update(interactive=False),
         gr.update(interactive=False),
         None,
+        gr.update(value=0, interactive=False),
         gr.update(interactive=False),
         None,
         None,
@@ -1112,6 +1115,7 @@ def track(
         gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
+        gr.update(value=0, interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
         None,
         export_status,
@@ -1173,6 +1177,7 @@ def reprocess_with_refinements(
             gr.update(),
             gr.update(),
             gr.update(),
+            gr.update(),
             message,
         )
 
@@ -1184,6 +1189,7 @@ def reprocess_with_refinements(
         message = "Add or select at least one point prompt before re-processing."
         gr.Warning(message, duration=5)
         return (
+            gr.update(),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -1224,6 +1230,7 @@ def reprocess_with_refinements(
         refinement_query_points,
         tracked_prompt_sources,
     )
+    result[11] = gr.update(interactive=True)
     result[-1] = (
         f"Re-processing complete with {merged_query_count} point prompt(s). "
         "Query points on video has been replaced."
@@ -1531,6 +1538,7 @@ def preview_sam_video_for_processed_frames(
     tracked_video_preview,
     video_fps,
     sam_model,
+    sam_video_skip_frames,
     refinement_query_points=None,
     tracked_prompt_sources=None,
 ):
@@ -1543,16 +1551,27 @@ def preview_sam_video_for_processed_frames(
         gr.Warning(message, duration=5)
         return None, message
 
+    try:
+        skip_count = parse_frame_skip_count(sam_video_skip_frames)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+
     runtime = get_sam_preview_runtime(sam_model)
     predictor = runtime["predictor"]
     review_frames = []
     processed_count = 0
+    skipped_by_frame_skip = 0
     skipped_no_points = 0
     skipped_no_positive = 0
     frame_count = len(video_frames)
 
     for frame_index in range(frame_count):
         frame = as_uint8_rgb_frame(video_frames[frame_index])
+        if not should_process_frame_for_skip(frame_index, skip_count):
+            skipped_by_frame_skip += 1
+            review_frames.append(frame)
+            continue
+
         point_coords, point_labels, _ = sam_point_prompts_for_frame(
             video_frames,
             video_preview_array,
@@ -1595,6 +1614,8 @@ def preview_sam_video_for_processed_frames(
     mediapy.write_video(video_file_path, np.asarray(review_frames), fps=output_fps)
 
     skipped_parts = []
+    if skipped_by_frame_skip:
+        skipped_parts.append(f"{skipped_by_frame_skip} by skip setting")
     if skipped_no_points:
         skipped_parts.append(f"{skipped_no_points} without points")
     if skipped_no_positive:
@@ -1791,6 +1812,12 @@ with gr.Blocks() as demo:
                 type="numpy",
                 interactive=False,
             )
+            processed_sam_video_skip_frames = gr.Number(
+                value=0,
+                precision=0,
+                label="Skip frames after each loaded frame (0 = keep all)",
+                interactive=False,
+            )
             processed_sam_video_button = gr.Button("Preview SAM on Processed Video", interactive=False)
             processed_sam_video = gr.Video(
                 label="SAM video review",
@@ -1833,6 +1860,7 @@ with gr.Blocks() as demo:
             processed_sam_model_dropdown,
             processed_sam_preview_button,
             processed_sam_preview_image,
+            processed_sam_video_skip_frames,
             processed_sam_video_button,
             processed_sam_video,
             tracked_video_preview,
@@ -1967,6 +1995,7 @@ with gr.Blocks() as demo:
             store_coordinates_button,
             processed_sam_model_dropdown,
             processed_sam_preview_button,
+            processed_sam_video_skip_frames,
             processed_sam_video_button,
             processed_sam_video,
             export_status,
@@ -2083,6 +2112,7 @@ with gr.Blocks() as demo:
             store_coordinates_button,
             processed_sam_model_dropdown,
             processed_sam_preview_button,
+            processed_sam_video_skip_frames,
             processed_sam_video_button,
             processed_sam_video,
             export_status,
@@ -2170,6 +2200,7 @@ with gr.Blocks() as demo:
             tracked_video_preview,
             video_fps,
             processed_sam_model_dropdown,
+            processed_sam_video_skip_frames,
             refinement_query_points,
             tracked_prompt_sources,
         ],

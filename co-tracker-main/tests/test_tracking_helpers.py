@@ -19,6 +19,7 @@ from tracking_helpers import (  # noqa: E402
     resolve_torch_device,
     resize_video_for_tracking,
     sample_video_for_frame_skip,
+    should_process_frame_for_skip,
     subsample_video_tensor,
 )
 
@@ -138,6 +139,20 @@ class TrackingHelpersTest(unittest.TestCase):
         np.testing.assert_array_equal(sampled, video[[0, 3, 6]])
         self.assertEqual(effective_fps, 10.0)
         self.assertEqual(stride, 3)
+
+    def test_should_process_frame_for_skip_keeps_first_then_skips_n_frames(self):
+        self.assertEqual(
+            [index for index in range(7) if should_process_frame_for_skip(index, skip_count=0)],
+            [0, 1, 2, 3, 4, 5, 6],
+        )
+        self.assertEqual(
+            [index for index in range(7) if should_process_frame_for_skip(index, skip_count=1)],
+            [0, 2, 4, 6],
+        )
+        self.assertEqual(
+            [index for index in range(7) if should_process_frame_for_skip(index, skip_count=2)],
+            [0, 3, 6],
+        )
 
     def test_map_frame_index_to_sampled_uses_previous_available_frame(self):
         self.assertEqual(map_frame_index_to_sampled(0, sampled_frame_count=3, stride=2), 0)

@@ -93,6 +93,14 @@ def get_frame_skip_stride(skip_count: int) -> int:
     return max(1, int(skip_count) + 1)
 
 
+def should_process_frame_for_skip(frame_index: int, skip_count: int) -> bool:
+    """Return whether frame_index should be processed when skipping after each processed frame."""
+    frame_index = int(frame_index)
+    if frame_index < 0:
+        return False
+    return frame_index % get_frame_skip_stride(skip_count) == 0
+
+
 def sample_video_for_frame_skip(video: np.ndarray, source_fps: float, skip_count: int):
     """Keep one frame, skip skip_count frames, and repeat."""
     video_array = np.asarray(video)

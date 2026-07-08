@@ -220,11 +220,17 @@ class GradioAppWiringTest(unittest.TestCase):
         app_source = APP_PATH.read_text()
         third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
 
+        self.assertIn("processed_sam_video_skip_frames = gr.Number", third_step_block)
+        self.assertIn('label="Skip frames after each loaded frame (0 = keep all)"', third_step_block)
         self.assertIn('processed_sam_video_button = gr.Button("Preview SAM on Processed Video"', third_step_block)
         self.assertIn("processed_sam_video = gr.Video", third_step_block)
         self.assertIn('label="SAM video review"', third_step_block)
         self.assertLess(
             third_step_block.index("processed_sam_preview_image = gr.Image"),
+            third_step_block.index("processed_sam_video_skip_frames = gr.Number"),
+        )
+        self.assertLess(
+            third_step_block.index("processed_sam_video_skip_frames = gr.Number"),
             third_step_block.index("processed_sam_video = gr.Video"),
         )
 
@@ -244,6 +250,7 @@ class GradioAppWiringTest(unittest.TestCase):
             "tracked_video_preview",
             "video_fps",
             "processed_sam_model_dropdown",
+            "processed_sam_video_skip_frames",
             "refinement_query_points",
             "tracked_prompt_sources",
         ):
@@ -261,9 +268,12 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIsNotNone(track)
         self.assertIsNotNone(reprocess)
         self.assertIn("processed_sam_video_button", submit.group(1))
+        self.assertIn("processed_sam_video_skip_frames", submit.group(1))
         self.assertIn("processed_sam_video", submit.group(1))
         self.assertIn("processed_sam_video_button", track.group(1))
+        self.assertIn("processed_sam_video_skip_frames", track.group(1))
         self.assertIn("processed_sam_video_button", reprocess.group(1))
+        self.assertIn("processed_sam_video_skip_frames", reprocess.group(1))
 
 
 if __name__ == "__main__":
