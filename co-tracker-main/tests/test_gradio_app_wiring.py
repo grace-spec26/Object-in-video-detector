@@ -216,6 +216,55 @@ class GradioAppWiringTest(unittest.TestCase):
             r"def preview_sam_on_frame\([^)]*refinement_query_points",
         )
 
+    def test_third_step_has_sam_video_review_below_point_preview(self):
+        app_source = APP_PATH.read_text()
+        third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
+
+        self.assertIn('processed_sam_video_button = gr.Button("Preview SAM on Processed Video"', third_step_block)
+        self.assertIn("processed_sam_video = gr.Video", third_step_block)
+        self.assertIn('label="SAM video review"', third_step_block)
+        self.assertLess(
+            third_step_block.index("processed_sam_preview_image = gr.Image"),
+            third_step_block.index("processed_sam_video = gr.Video"),
+        )
+
+    def test_processed_sam_video_button_runs_sam_on_all_processed_frames(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"processed_sam_video_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("fn = preview_sam_video_for_processed_frames", match.group(1))
+        for state_name in (
+            "video",
+            "video_preview",
+            "query_points",
+            "selected_tracks",
+            "selected_visibility",
+            "selected_point_labels",
+            "tracked_video_preview",
+            "video_fps",
+            "processed_sam_model_dropdown",
+            "refinement_query_points",
+            "tracked_prompt_sources",
+        ):
+            self.assertIn(state_name, match.group(1))
+        self.assertIn("processed_sam_video", match.group(1))
+        self.assertIn("export_status", match.group(1))
+
+    def test_track_and_submit_update_sam_video_review_controls(self):
+        app_source = APP_PATH.read_text()
+        submit = re.search(r"submit\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        track = re.search(r"track_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        reprocess = re.search(r"reprocess_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(submit)
+        self.assertIsNotNone(track)
+        self.assertIsNotNone(reprocess)
+        self.assertIn("processed_sam_video_button", submit.group(1))
+        self.assertIn("processed_sam_video", submit.group(1))
+        self.assertIn("processed_sam_video_button", track.group(1))
+        self.assertIn("processed_sam_video_button", reprocess.group(1))
+
 
 if __name__ == "__main__":
     unittest.main()

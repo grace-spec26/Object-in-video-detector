@@ -977,6 +977,8 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         gr.update(interactive=False),
         gr.update(interactive=False),
         None,
+        gr.update(interactive=False),
+        None,
         None,
         gr.update(minimum=0, maximum=0, value=0, interactive=False),
         None,
@@ -1110,6 +1112,8 @@ def track(
         gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
+        gr.update(interactive=has_selected_points),
+        None,
         export_status,
     )
 
@@ -1167,6 +1171,8 @@ def reprocess_with_refinements(
             gr.update(),
             gr.update(),
             gr.update(),
+            gr.update(),
+            gr.update(),
             message,
         )
 
@@ -1178,6 +1184,8 @@ def reprocess_with_refinements(
         message = "Add or select at least one point prompt before re-processing."
         gr.Warning(message, duration=5)
         return (
+            gr.update(),
+            gr.update(),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -1337,25 +1345,18 @@ def draw_sam_preview(frame, mask, point_coords, point_labels):
     return preview
 
 
-def preview_sam_on_frame(
+def sam_point_prompts_for_frame(
     video_frames,
     video_preview_array,
     query_points,
     selected_tracks,
     selected_visibility,
     selected_point_labels,
-    frame_num,
-    sam_model,
+    frame_index,
     prefer_tracked_points=False,
     refinement_query_points=None,
     tracked_prompt_sources=None,
 ):
-    if video_frames is None or video_preview_array is None:
-        message = "Submit a video before previewing SAM."
-        gr.Warning(message, duration=5)
-        return None, message
-
-    frame_index = int(np.clip(int(frame_num), 0, len(video_frames) - 1))
     point_coords = np.empty((0, 2), dtype=np.float32)
     point_labels = np.empty((0,), dtype=np.int32)
     prompt_source = "selected"
@@ -1423,6 +1424,41 @@ def preview_sam_on_frame(
             point_labels = refinement_labels
             prompt_source = "refinement"
 
+    return point_coords, point_labels, prompt_source
+
+
+def preview_sam_on_frame(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    frame_num,
+    sam_model,
+    prefer_tracked_points=False,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
+    if video_frames is None or video_preview_array is None:
+        message = "Submit a video before previewing SAM."
+        gr.Warning(message, duration=5)
+        return None, message
+
+    frame_index = int(np.clip(int(frame_num), 0, len(video_frames) - 1))
+    point_coords, point_labels, prompt_source = sam_point_prompts_for_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_index,
+        prefer_tracked_points=prefer_tracked_points,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+    )
+
     if len(point_coords) == 0:
         message = f"No selected or visible tracked points on frame {frame_index}."
         gr.Warning(message, duration=5)
@@ -1482,6 +1518,94 @@ def preview_sam_for_selected_frame(
         prefer_tracked_points=has_processed_selection,
         refinement_query_points=refinement_query_points,
         tracked_prompt_sources=tracked_prompt_sources,
+    )
+
+
+def preview_sam_video_for_processed_frames(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    tracked_video_preview,
+    video_fps,
+    sam_model,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
+    if video_frames is None or video_preview_array is None:
+        message = "Submit and track a video before running SAM video review."
+        gr.Warning(message, duration=5)
+        return None, message
+    if tracked_video_preview is None or selected_tracks is None or selected_point_labels is None:
+        message = "Track selected points before running SAM video review."
+        gr.Warning(message, duration=5)
+        return None, message
+
+    runtime = get_sam_preview_runtime(sam_model)
+    predictor = runtime["predictor"]
+    review_frames = []
+    processed_count = 0
+    skipped_no_points = 0
+    skipped_no_positive = 0
+    frame_count = len(video_frames)
+
+    for frame_index in range(frame_count):
+        frame = as_uint8_rgb_frame(video_frames[frame_index])
+        point_coords, point_labels, _ = sam_point_prompts_for_frame(
+            video_frames,
+            video_preview_array,
+            query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            frame_index,
+            prefer_tracked_points=True,
+            refinement_query_points=refinement_query_points,
+            tracked_prompt_sources=tracked_prompt_sources,
+        )
+        if len(point_coords) == 0:
+            skipped_no_points += 1
+            review_frames.append(frame)
+            continue
+        if not np.any(point_labels == 1):
+            skipped_no_positive += 1
+            review_frames.append(frame)
+            continue
+
+        predictor.set_image(frame)
+        masks, scores, _ = predictor.predict(
+            point_coords=point_coords.astype(np.float32),
+            point_labels=point_labels.astype(np.int32),
+            multimask_output=len(point_coords) == 1,
+            normalize_coords=True,
+        )
+        best_mask = masks[int(np.argmax(scores))]
+        review_frames.append(draw_sam_preview(frame, best_mask, point_coords, point_labels))
+        processed_count += 1
+
+    video_file_name = uuid.uuid4().hex + ".mp4"
+    video_path = os.path.join(os.path.dirname(__file__), "tmp")
+    video_file_path = os.path.join(video_path, video_file_name)
+    os.makedirs(video_path, exist_ok=True)
+    output_fps = float(video_fps or 24)
+    if output_fps <= 0:
+        output_fps = 24
+    mediapy.write_video(video_file_path, np.asarray(review_frames), fps=output_fps)
+
+    skipped_parts = []
+    if skipped_no_points:
+        skipped_parts.append(f"{skipped_no_points} without points")
+    if skipped_no_positive:
+        skipped_parts.append(f"{skipped_no_positive} without positive points")
+    skipped_text = f"; skipped {', '.join(skipped_parts)}" if skipped_parts else ""
+    return (
+        video_file_path,
+        (
+            f"SAM video review complete for {processed_count}/{frame_count} frame(s) "
+            f"with {runtime['model_label']} on {runtime['device']}{skipped_text}."
+        ),
     )
 
 
@@ -1667,6 +1791,13 @@ with gr.Blocks() as demo:
                 type="numpy",
                 interactive=False,
             )
+            processed_sam_video_button = gr.Button("Preview SAM on Processed Video", interactive=False)
+            processed_sam_video = gr.Video(
+                label="SAM video review",
+                interactive=False,
+                autoplay=True,
+                loop=True,
+            )
 
     
 
@@ -1702,6 +1833,8 @@ with gr.Blocks() as demo:
             processed_sam_model_dropdown,
             processed_sam_preview_button,
             processed_sam_preview_image,
+            processed_sam_video_button,
+            processed_sam_video,
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
@@ -1834,6 +1967,8 @@ with gr.Blocks() as demo:
             store_coordinates_button,
             processed_sam_model_dropdown,
             processed_sam_preview_button,
+            processed_sam_video_button,
+            processed_sam_video,
             export_status,
         ],
         queue = False,
@@ -1948,6 +2083,8 @@ with gr.Blocks() as demo:
             store_coordinates_button,
             processed_sam_model_dropdown,
             processed_sam_preview_button,
+            processed_sam_video_button,
+            processed_sam_video,
             export_status,
         ],
         queue = False,
@@ -2016,6 +2153,28 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             processed_sam_preview_image,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    processed_sam_video_button.click(
+        fn = preview_sam_video_for_processed_frames,
+        inputs = [
+            video,
+            video_preview,
+            query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            tracked_video_preview,
+            video_fps,
+            processed_sam_model_dropdown,
+            refinement_query_points,
+            tracked_prompt_sources,
+        ],
+        outputs = [
+            processed_sam_video,
             export_status,
         ],
         queue = False,
