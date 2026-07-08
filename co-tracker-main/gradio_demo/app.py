@@ -65,6 +65,7 @@ try:
         resolve_torch_device,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
+        save_sam_video_review,
         should_process_frame_for_skip,
         subsample_video_tensor,
     )
@@ -106,6 +107,7 @@ except ImportError:
         resolve_torch_device,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
+        save_sam_video_review,
         should_process_frame_for_skip,
         subsample_video_tensor,
     )
@@ -307,6 +309,9 @@ SAM_IMAGE_MODEL_CHOICES = (
 DEFAULT_SAM_IMAGE_MODEL = "sam2.1_hiera_small.pt"
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MOBILE_SAM_ROOT = PROJECT_ROOT / "MobileSAM-master"
+DEFAULT_SAM_VIDEO_SAVE_DIR = PROJECT_ROOT / "sam-video-preview"
+DEFAULT_RAW_MASK_ROOT = PROJECT_ROOT / "raw-mask-data"
+DEFAULT_YOLO_DATASET_DIR = PROJECT_ROOT / "dataset"
 sam_preview_runtime_lock = threading.Lock()
 sam_preview_runtimes = {}
 
@@ -1630,6 +1635,49 @@ def preview_sam_video_for_processed_frames(
     )
 
 
+def save_sam_video_review_from_state(sam_video_review, output_dir, video_fps):
+    try:
+        output_path = save_sam_video_review(
+            sam_video_review,
+            output_dir or DEFAULT_SAM_VIDEO_SAVE_DIR,
+            fps=video_fps or 24,
+        )
+    except Exception as exc:
+        message = f"Failed to save SAM video preview: {exc}"
+        gr.Warning(message, duration=5)
+        return None, message
+
+    return str(output_path), f"Saved SAM video preview to {output_path}."
+
+
+def export_sam_preview_as_yolo_custom(raw_mask_root, output_dir):
+    raw_mask_path = Path(raw_mask_root).expanduser() if raw_mask_root else DEFAULT_RAW_MASK_ROOT
+    dataset_path = Path(output_dir).expanduser() if output_dir else DEFAULT_YOLO_DATASET_DIR
+
+    try:
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from export_yolo_segmentation_dataset import export_yolo_segmentation_dataset
+
+        stats = export_yolo_segmentation_dataset(
+            raw_mask_root=raw_mask_path,
+            output_dir=dataset_path,
+            train_ratio=0.8,
+            min_area_px=20,
+            approx_epsilon=2.0,
+        )
+    except Exception as exc:
+        message = f"Failed to save preview as YOLO custom: {exc}"
+        gr.Warning(message, duration=5)
+        return message
+
+    return (
+        f"Saved YOLO custom dataset to {dataset_path}: "
+        f"{stats.train_images} train image(s), {stats.val_images} val image(s), "
+        f"{stats.total_wound_instances} wound polygon(s)."
+    )
+
+
 with gr.Blocks() as demo:
     video = gr.State()
     video_queried_preview = gr.State()
@@ -1824,6 +1872,28 @@ with gr.Blocks() as demo:
                 interactive=False,
                 autoplay=True,
                 loop=True,
+            )
+            sam_video_save_dir = gr.Textbox(
+                value=str(DEFAULT_SAM_VIDEO_SAVE_DIR),
+                label="SAM video save directory",
+                interactive=True,
+            )
+            with gr.Row():
+                save_sam_video_button = gr.Button("Save SAM Video Preview", interactive=True)
+                save_yolo_custom_button = gr.Button("Save Preview as YOLO Custom", interactive=True)
+            saved_sam_video_file = gr.File(
+                label="Saved SAM preview MP4",
+                interactive=False,
+            )
+            yolo_raw_mask_root = gr.Textbox(
+                value=str(DEFAULT_RAW_MASK_ROOT),
+                label="YOLO raw-mask root",
+                interactive=True,
+            )
+            yolo_dataset_output_dir = gr.Textbox(
+                value=str(DEFAULT_YOLO_DATASET_DIR),
+                label="YOLO dataset output directory",
+                interactive=True,
             )
 
     
@@ -2206,6 +2276,32 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             processed_sam_video,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    save_sam_video_button.click(
+        fn = save_sam_video_review_from_state,
+        inputs = [
+            processed_sam_video,
+            sam_video_save_dir,
+            video_fps,
+        ],
+        outputs = [
+            saved_sam_video_file,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    save_yolo_custom_button.click(
+        fn = export_sam_preview_as_yolo_custom,
+        inputs = [
+            yolo_raw_mask_root,
+            yolo_dataset_output_dir,
+        ],
+        outputs = [
             export_status,
         ],
         queue = False,

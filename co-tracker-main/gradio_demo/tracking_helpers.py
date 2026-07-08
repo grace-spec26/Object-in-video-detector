@@ -1,5 +1,6 @@
 from pathlib import Path
-from typing import Callable, Dict, Optional, Sequence, Tuple
+import shutil
+from typing import Callable, Dict, Optional, Sequence, Tuple, Union
 
 import cv2
 import numpy as np
@@ -8,6 +9,7 @@ import numpy as np
 TRACKING_RESOLUTION_OPTIONS = ("1080P", "720P", "640P", "520P")
 DEFAULT_TRACKING_RESOLUTION = "520P"
 TRACKING_FRAME_STRIDE = 2
+DEFAULT_SAM_PREVIEW_VIDEO_FILENAME = "sam_video_preview.mp4"
 _TRACKING_RESOLUTION_HEIGHTS = {
     "520P": 520,
     "640P": 640,
@@ -202,3 +204,73 @@ def get_cached_cotracker_model(
         model_cache[device] = model
 
     return model_cache[device]
+
+
+def _coerce_positive_fps(fps) -> float:
+    try:
+        parsed_fps = float(fps)
+    except (TypeError, ValueError):
+        parsed_fps = 24.0
+    return parsed_fps if parsed_fps > 0 else 24.0
+
+
+def _write_rgb_frames_to_mp4(frames: np.ndarray, output_path: Path, fps: float) -> None:
+    frame_array = np.asarray(frames)
+    if frame_array.ndim != 4 or frame_array.shape[-1] not in (3, 4):
+        raise ValueError("SAM video review frames must have shape (T, H, W, 3/4).")
+    if frame_array.shape[0] == 0:
+        raise ValueError("SAM video review has no frames to save.")
+
+    if frame_array.dtype != np.uint8:
+        if np.issubdtype(frame_array.dtype, np.floating) and frame_array.max(initial=0) <= 1.0:
+            frame_array = frame_array * 255
+        frame_array = np.clip(frame_array, 0, 255).astype(np.uint8)
+
+    if frame_array.shape[-1] == 4:
+        frame_array = frame_array[..., :3]
+
+    height, width = frame_array.shape[1:3]
+    writer = cv2.VideoWriter(
+        str(output_path),
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        _coerce_positive_fps(fps),
+        (int(width), int(height)),
+    )
+    if not writer.isOpened():
+        raise RuntimeError(f"Could not open MP4 writer for: {output_path}")
+
+    try:
+        for frame in frame_array:
+            writer.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
+    finally:
+        writer.release()
+
+
+def save_sam_video_review(
+    video_review,
+    output_dir: Union[Path, str],
+    fps: float = 24.0,
+    filename: str = DEFAULT_SAM_PREVIEW_VIDEO_FILENAME,
+) -> Path:
+    """Save a SAM video review to a user-selected directory as an MP4."""
+    if video_review is None:
+        raise ValueError("Run SAM video review before saving the preview.")
+    if isinstance(video_review, dict):
+        video_review = video_review.get("name") or video_review.get("path") or video_review.get("data")
+        if video_review is None:
+            raise ValueError("Run SAM video review before saving the preview.")
+
+    destination_dir = Path(output_dir).expanduser() if output_dir else Path.cwd()
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    output_path = destination_dir / filename
+
+    if isinstance(video_review, (str, Path)):
+        source_path = Path(video_review).expanduser()
+        if not source_path.exists():
+            raise FileNotFoundError(f"SAM video review file does not exist: {source_path}")
+        if source_path.resolve() != output_path.resolve():
+            shutil.copy2(source_path, output_path)
+        return output_path
+
+    _write_rgb_frames_to_mp4(np.asarray(video_review), output_path, fps)
+    return output_path

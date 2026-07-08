@@ -43,6 +43,7 @@ dataset/
 datasets/
 runs/
 raw-mask-data/
+sam-video-preview/
 tracked-data/
 .runtime_cache/
 sam2/

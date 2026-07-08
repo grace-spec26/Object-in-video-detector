@@ -275,6 +275,42 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("processed_sam_video_button", reprocess.group(1))
         self.assertIn("processed_sam_video_skip_frames", reprocess.group(1))
 
+    def test_third_step_has_sam_video_save_and_yolo_export_controls(self):
+        app_source = APP_PATH.read_text()
+        third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
+
+        self.assertIn("sam_video_save_dir = gr.Textbox", third_step_block)
+        self.assertIn('label="SAM video save directory"', third_step_block)
+        self.assertIn('save_sam_video_button = gr.Button("Save SAM Video Preview"', third_step_block)
+        self.assertIn("saved_sam_video_file = gr.File", third_step_block)
+        self.assertIn("yolo_raw_mask_root = gr.Textbox", third_step_block)
+        self.assertIn('label="YOLO raw-mask root"', third_step_block)
+        self.assertIn("yolo_dataset_output_dir = gr.Textbox", third_step_block)
+        self.assertIn('label="YOLO dataset output directory"', third_step_block)
+        self.assertIn('save_yolo_custom_button = gr.Button("Save Preview as YOLO Custom"', third_step_block)
+
+    def test_sam_video_save_button_uses_review_video_and_user_directory(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"save_sam_video_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("fn = save_sam_video_review_from_state", match.group(1))
+        self.assertIn("processed_sam_video", match.group(1))
+        self.assertIn("sam_video_save_dir", match.group(1))
+        self.assertIn("video_fps", match.group(1))
+        self.assertIn("saved_sam_video_file", match.group(1))
+        self.assertIn("export_status", match.group(1))
+
+    def test_yolo_custom_button_runs_existing_segmentation_exporter_defaults(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"save_yolo_custom_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("fn = export_sam_preview_as_yolo_custom", match.group(1))
+        self.assertIn("yolo_raw_mask_root", match.group(1))
+        self.assertIn("yolo_dataset_output_dir", match.group(1))
+        self.assertIn("export_status", match.group(1))
+
 
 if __name__ == "__main__":
     unittest.main()

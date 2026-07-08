@@ -1,7 +1,9 @@
 import sys
 import unittest
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
+import cv2
 import numpy as np
 
 
@@ -19,6 +21,7 @@ from tracking_helpers import (  # noqa: E402
     resolve_torch_device,
     resize_video_for_tracking,
     sample_video_for_frame_skip,
+    save_sam_video_review,
     should_process_frame_for_skip,
     subsample_video_tensor,
 )
@@ -234,6 +237,38 @@ class TrackingHelpersTest(unittest.TestCase):
         self.assertEqual(args[1], "cotracker3_online")
         self.assertEqual(kwargs, {"source": "local"})
         self.assertTrue((Path(args[0]) / "hubconf.py").is_file())
+
+    def test_save_sam_video_review_combines_frames_into_mp4(self):
+        with TemporaryDirectory() as tmp:
+            output_dir = Path(tmp) / "chosen-output"
+            frames = np.zeros((3, 8, 10, 3), dtype=np.uint8)
+            frames[0, :, :] = [255, 0, 0]
+            frames[1, :, :] = [0, 255, 0]
+            frames[2, :, :] = [0, 0, 255]
+
+            output_path = save_sam_video_review(frames, output_dir, fps=12)
+
+            self.assertEqual(output_path, output_dir / "sam_video_preview.mp4")
+            self.assertTrue(output_path.exists())
+            self.assertGreater(output_path.stat().st_size, 0)
+
+            capture = cv2.VideoCapture(str(output_path))
+            try:
+                self.assertTrue(capture.isOpened())
+                self.assertEqual(int(capture.get(cv2.CAP_PROP_FRAME_COUNT)), 3)
+            finally:
+                capture.release()
+
+    def test_save_sam_video_review_copies_existing_review_video_to_chosen_directory(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "source.mp4"
+            source.write_bytes(b"existing preview")
+
+            output_path = save_sam_video_review(source, root / "chosen-output", fps=30)
+
+            self.assertEqual(output_path.read_bytes(), b"existing preview")
+            self.assertEqual(output_path.name, "sam_video_preview.mp4")
 
 
 if __name__ == "__main__":

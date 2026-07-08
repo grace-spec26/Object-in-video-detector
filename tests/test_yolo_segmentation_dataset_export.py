@@ -22,6 +22,16 @@ class YoloSegmentationDatasetExportTest(unittest.TestCase):
             draw.rectangle((x1, y1, x2 - 1, y2 - 1), fill=1)
         mask.save(masks_dir / f"{name}.png")
 
+    def _write_frame_and_mask_values(self, frames_dir, masks_dir, name, valued_regions):
+        image = Image.new("RGB", (30, 20), (40, 80, 120))
+        image.save(frames_dir / f"{name}.png")
+
+        mask = Image.new("L", (30, 20), 0)
+        draw = ImageDraw.Draw(mask)
+        for x1, y1, x2, y2, value in valued_regions:
+            draw.rectangle((x1, y1, x2 - 1, y2 - 1), fill=value)
+        mask.save(masks_dir / f"{name}.png")
+
     def _write_existing_dataset_item(self, dataset_dir, split, stem):
         images_dir = dataset_dir / "images" / split
         labels_dir = dataset_dir / "labels" / split
@@ -149,6 +159,51 @@ class YoloSegmentationDatasetExportTest(unittest.TestCase):
             self.assertEqual(len(val_images), 4)
             image_names = [path.name for path in train_images + val_images]
             self.assertEqual(len(image_names), len(set(image_names)))
+
+    def test_ignores_225_mask_pixels_when_converting_to_yolo_polygons(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw-mask-data"
+            frames_dir = raw_root / "frames"
+            masks_dir = raw_root / "mask"
+            dataset_dir = root / "dataset"
+            frames_dir.mkdir(parents=True)
+            masks_dir.mkdir(parents=True)
+
+            self._write_frame_and_mask_values(
+                frames_dir,
+                masks_dir,
+                "frame_000001",
+                [
+                    (2, 3, 8, 10, 1),
+                    (18, 2, 29, 18, 225),
+                ],
+            )
+            self._write_frame_and_mask_values(
+                frames_dir,
+                masks_dir,
+                "frame_000002",
+                [
+                    (3, 4, 10, 13, 1),
+                    (16, 1, 27, 17, 225),
+                ],
+            )
+
+            stats = export_yolo_segmentation_dataset(
+                raw_mask_root=raw_root,
+                output_dir=dataset_dir,
+                train_ratio=0.5,
+                min_area_px=6,
+                approx_epsilon=1.0,
+            )
+
+            self.assertEqual(stats.exported_images, 2)
+            label_row = (dataset_dir / "labels" / "train" / "train_img00001.txt").read_text(
+                encoding="utf-8"
+            ).strip()
+            coords = [float(value) for value in label_row.split()[1:]]
+            x_coords = coords[0::2]
+            self.assertLess(max(x_coords), 0.5)
 
 
 if __name__ == "__main__":
