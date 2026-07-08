@@ -774,6 +774,40 @@
         pointer-events: none;
       }
 
+      .timeline-boundary-handle {
+        position: absolute;
+        top: -4px;
+        bottom: -4px;
+        width: 14px;
+        transform: translateX(-50%);
+        border: 2px solid #ff4444;
+        border-top: none;
+        border-bottom: none;
+        border-radius: 5px;
+        cursor: ew-resize;
+        z-index: 20;
+        background: rgba(255, 68, 68, 0.12);
+        touch-action: none;
+      }
+
+      .timeline-boundary-handle::before {
+        content: '';
+        position: absolute;
+        top: 50%;
+        left: 50%;
+        width: 4px;
+        height: 24px;
+        border-left: 1px solid rgba(255, 68, 68, 0.9);
+        border-right: 1px solid rgba(255, 68, 68, 0.9);
+        transform: translate(-50%, -50%);
+      }
+
+      .timeline-boundary-handle:hover,
+      .timeline-boundary-handle.dragging {
+        background: rgba(255, 68, 68, 0.24);
+        border-color: #dc3545;
+      }
+
       .timeline-labels {
         display: flex;
         justify-content: space-between;
@@ -1002,6 +1036,7 @@
       let isAnalyzing = false
       let isExportingSegmentVideos = false
       let chartView = { start: 0, end: 0 } // visible range; 0=fit all
+      let draggingSegmentBoundary = null
 
       const uploadSection = document.getElementById('uploadSection')
       const videoInput = document.getElementById('videoInput')
@@ -1798,6 +1833,92 @@
         return { start: 0, end: duration }
       }
 
+      function getTimelineTimeFromClientX(clientX) {
+        if (!videoElement || videoElement.duration <= 0) return null
+        const rect = timelineBarContainer.getBoundingClientRect()
+        if (rect.width <= 0) return null
+        const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width))
+        const view = getViewRange()
+        return view.start + pct * (view.end - view.start)
+      }
+
+      function clampSegmentBoundaryTime(boundaryIndex, time) {
+        const duration = videoElement && videoElement.duration > 0 ? videoElement.duration : 0
+        const minGap = Math.min(0.1, Math.max(0.01, duration * 0.001))
+        let minTime = minGap
+        let maxTime = Math.max(minGap, duration - minGap)
+
+        if (segmentMode === 'points') {
+          if (boundaryIndex <= 0 || boundaryIndex >= cutPoints.length - 1) return null
+          minTime = cutPoints[boundaryIndex - 1] + minGap
+          maxTime = cutPoints[boundaryIndex + 1] - minGap
+        } else {
+          if (boundaryIndex <= 0 || boundaryIndex >= explicitSegments.length) return null
+          minTime = explicitSegments[boundaryIndex - 1].start + minGap
+          maxTime = explicitSegments[boundaryIndex].end - minGap
+        }
+
+        if (maxTime < minTime) return null
+        return Math.max(minTime, Math.min(maxTime, time))
+      }
+
+      function updateSegmentBoundary(boundaryIndex, time) {
+        const nextTime = clampSegmentBoundaryTime(boundaryIndex, time)
+        if (nextTime === null) return false
+
+        if (segmentMode === 'points') {
+          cutPoints[boundaryIndex] = nextTime
+        } else {
+          explicitSegments[boundaryIndex - 1].end = nextTime
+          explicitSegments[boundaryIndex].start = nextTime
+        }
+
+        if (videoElement) {
+          videoElement.currentTime = nextTime
+        }
+        renderSegmentsUI()
+        renderTimeline()
+        return true
+      }
+
+      function startSegmentBoundaryDrag(event) {
+        const boundaryIndex = parseInt(event.currentTarget.dataset.boundaryIndex, 10)
+        if (!Number.isFinite(boundaryIndex)) return
+        event.preventDefault()
+        event.stopPropagation()
+        draggingSegmentBoundary = {
+          boundaryIndex,
+          pointerId: event.pointerId,
+        }
+        event.currentTarget.classList.add('dragging')
+        if (timelineBarContainer.setPointerCapture) {
+          timelineBarContainer.setPointerCapture(event.pointerId)
+        }
+        dragSegmentBoundaryToClientX(event.clientX)
+      }
+
+      function dragSegmentBoundaryToClientX(clientX) {
+        if (!draggingSegmentBoundary) return false
+        const time = getTimelineTimeFromClientX(clientX)
+        if (time === null) return false
+        return updateSegmentBoundary(draggingSegmentBoundary.boundaryIndex, time)
+      }
+
+      function finishSegmentBoundaryDrag(event) {
+        if (!draggingSegmentBoundary) return
+        const pointerId = draggingSegmentBoundary.pointerId
+        if (
+          event &&
+          timelineBarContainer.releasePointerCapture &&
+          timelineBarContainer.hasPointerCapture &&
+          timelineBarContainer.hasPointerCapture(pointerId)
+        ) {
+          timelineBarContainer.releasePointerCapture(pointerId)
+        }
+        draggingSegmentBoundary = null
+        renderTimeline()
+      }
+
       function renderSceneChart() {
         if (sceneDeltas.length === 0) return
         if (sceneChartSection.classList.contains('hidden')) return
@@ -1976,6 +2097,23 @@
 
           timelineSegments.appendChild(el)
         })
+
+        for (let boundaryIndex = 1; boundaryIndex < segs.length; boundaryIndex++) {
+          const leftSeg = segs[boundaryIndex - 1]
+          const rightSeg = segs[boundaryIndex]
+          const boundaryTime = rightSeg.start
+          if (Math.abs(leftSeg.end - boundaryTime) > 0.05) continue
+          if (boundaryTime <= view.start || boundaryTime >= view.end) continue
+
+          const leftPercent = ((boundaryTime - view.start) / viewDuration) * 100
+          const handle = document.createElement('div')
+          handle.className = 'timeline-boundary-handle'
+          handle.dataset.boundaryIndex = String(boundaryIndex)
+          handle.style.left = leftPercent + '%'
+          handle.title = `Drag boundary ${boundaryIndex}: ${formatTime(boundaryTime)}`
+          handle.addEventListener('pointerdown', startSegmentBoundaryDrag)
+          timelineSegments.appendChild(handle)
+        }
 
         renderSceneChart()
       }
@@ -2950,13 +3088,27 @@
 
       // Click on timeline empty area to seek
       timelineBarContainer.addEventListener('click', e => {
-        if (e.target.closest('.timeline-segment')) return
+        if (e.target.closest('.timeline-segment') || e.target.closest('.timeline-boundary-handle')) return
         const rect = timelineBarContainer.getBoundingClientRect()
         const pct = (e.clientX - rect.left) / rect.width
         if (videoElement) {
           const view = getViewRange()
           videoElement.currentTime = view.start + pct * (view.end - view.start)
         }
+      })
+
+      timelineBarContainer.addEventListener('pointermove', e => {
+        if (!draggingSegmentBoundary) return
+        e.preventDefault()
+        dragSegmentBoundaryToClientX(e.clientX)
+      })
+
+      timelineBarContainer.addEventListener('pointerup', e => {
+        finishSegmentBoundaryDrag(e)
+      })
+
+      timelineBarContainer.addEventListener('pointercancel', e => {
+        finishSegmentBoundaryDrag(e)
       })
 
       // Drag on chart to seek: mousedown seeks+pauses, drag keeps seeking, mouseup resumes if was playing
