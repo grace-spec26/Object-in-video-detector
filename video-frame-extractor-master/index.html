@@ -1488,6 +1488,30 @@
         return sorted[index]
       }
 
+      function deltaStats(values) {
+        if (values.length < 2) return null
+        const median = percentile(values, 0.5)
+        const q1 = percentile(values, 0.25)
+        const q3 = percentile(values, 0.75)
+        const deviations = values.map(delta => Math.abs(delta - median))
+        const mad = percentile(deviations, 0.5)
+        return {
+          median,
+          iqr: q3 - q1,
+          mad,
+        }
+      }
+
+      function localDeltaStats(samples, start, end, excludeIndex) {
+        const values = []
+        for (let i = start; i <= end; i++) {
+          if (i === excludeIndex) continue
+          const delta = samples[i].delta
+          if (Number.isFinite(delta) && delta > 0) values.push(delta)
+        }
+        return deltaStats(values)
+      }
+
       function detectCameraSwitchTimes(samples, duration, interval) {
         const deltas = samples.map(s => s.delta).filter(delta => delta > 0)
         if (deltas.length < 3) return []
@@ -1500,10 +1524,12 @@
         const mad = percentile(deviations, 0.5)
 
         // Camera switches are sharp peaks in frame-to-frame visual change.
-        // The threshold combines robust statistics with a small content floor
-        // so normal motion does not create too many false switch points.
+        // The global threshold catches strong absolute peaks. The local
+        // prominence check catches smaller sharp cuts in long/high-motion
+        // videos where global statistics can otherwise rise too high.
         const iqr = q3 - q1
         const threshold = Math.max(12, q90, median + mad * 6, q3 + iqr * 1.5)
+        const localRadiusSamples = Math.max(3, Math.ceil(6 / Math.max(interval, 0.001)))
         const minGapSeconds = Math.max(1, interval * 2)
         const edgeGapSeconds = Math.max(0.2, interval * 0.5)
 
@@ -1514,8 +1540,25 @@
           const next = samples[i + 1].delta
           const time = samples[i].time
           if (time <= edgeGapSeconds || time >= duration - edgeGapSeconds) continue
-          if (cur < threshold) continue
           if (cur < prev || cur < next) continue
+
+          const globalPeak = cur >= threshold
+          const localStart = Math.max(0, i - localRadiusSamples)
+          const localEnd = Math.min(samples.length - 1, i + localRadiusSamples)
+          const localStatsOptions = [
+            localDeltaStats(samples, localStart, localEnd, i),
+            localDeltaStats(samples, localStart, Math.max(localStart, i - 1), i),
+            localDeltaStats(samples, Math.min(localEnd, i + 1), localEnd, i),
+          ].filter(Boolean)
+          const localStats = localStatsOptions.sort((a, b) => a.median - b.median)[0]
+          const localProminence = localStats
+            ? Math.max(8, localStats.mad * 5, localStats.iqr * 1.5)
+            : Infinity
+          const localPeak = localStats
+            ? cur >= Math.max(10, localStats.median + localProminence)
+            : false
+          if (!globalPeak && !localPeak) continue
+
           candidates.push({ time, delta: cur })
         }
 
