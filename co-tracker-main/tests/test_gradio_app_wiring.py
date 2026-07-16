@@ -44,12 +44,41 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("sam_model_dropdown", match.group(1))
         self.assertIn("sam_preview_button", match.group(1))
 
-    def test_store_coordinates_uses_selected_point_labels(self):
+    def test_second_step_has_one_atomic_no_wound_export_button(self):
         app_source = APP_PATH.read_text()
-        match = re.search(r"store_coordinates_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        second_step_block = app_source.split("## Third step:", maxsplit=1)[0]
+
+        self.assertIn(
+            'no_wound_export_button = gr.Button("Export No-Wound Frames to YOLO", interactive=False)',
+            second_step_block,
+        )
+        self.assertNotIn("store_frames_button = gr.Button", second_step_block)
+        self.assertNotIn("store_coordinates_button = gr.Button", second_step_block)
+
+    def test_no_wound_export_uses_clean_video_state_only(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"no_wound_export_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
 
         self.assertIsNotNone(match)
-        self.assertIn("selected_point_labels", match.group(1))
+        self.assertIn("fn = export_no_wound_frames_from_state", match.group(1))
+        self.assertRegex(match.group(1), r"inputs\s*=\s*\[\s*video,?\s*\]")
+        self.assertNotIn("selected_tracks", match.group(1))
+        self.assertNotIn("selected_point_labels", match.group(1))
+
+    def test_submit_track_and_reprocess_keep_no_wound_export_available(self):
+        app_source = APP_PATH.read_text()
+        submit = re.search(r"submit\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        track = re.search(r"track_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        reprocess = re.search(r"reprocess_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(submit)
+        self.assertIsNotNone(track)
+        self.assertIsNotNone(reprocess)
+        self.assertIn("no_wound_export_button", submit.group(1))
+        self.assertIn("no_wound_export_button", track.group(1))
+        self.assertIn("no_wound_export_button", reprocess.group(1))
+        self.assertNotIn("store_frames_button", app_source)
+        self.assertNotIn("store_coordinates_button", app_source)
 
     def test_clicked_point_marker_uses_compact_prompt_dot(self):
         app_source = APP_PATH.read_text()

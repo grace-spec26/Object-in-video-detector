@@ -30,12 +30,8 @@ import numpy as np
 
 try:
     from .export_helpers import (
-        DEFAULT_COORDINATES_DIR,
-        DEFAULT_FRAMES_DIR,
         labeled_query_points_for_frame,
         scale_tracks_to_frame_space,
-        store_coordinate_arrays,
-        store_original_frames,
         visible_labeled_points_for_frame,
     )
     from .refinement_helpers import (
@@ -72,12 +68,8 @@ try:
     )
 except ImportError:
     from export_helpers import (
-        DEFAULT_COORDINATES_DIR,
-        DEFAULT_FRAMES_DIR,
         labeled_query_points_for_frame,
         scale_tracks_to_frame_space,
-        store_coordinate_arrays,
-        store_original_frames,
         visible_labeled_points_for_frame,
     )
     from refinement_helpers import (
@@ -981,8 +973,7 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         None,
         None,
         [],
-        gr.update(interactive=False),
-        gr.update(interactive=False),
+        gr.update(interactive=True),
         gr.update(interactive=False),
         gr.update(interactive=False),
         None,
@@ -1109,9 +1100,9 @@ def track(
     mediapy.write_video(video_file_path, painted_video, fps=video_fps)
 
     export_status = (
-        "Tracking complete. Frames can now be stored."
+        "Grid tracking complete."
         if not has_selected_points
-        else "Tracking complete. Frames and selected-point coordinates can now be stored."
+        else "Selected-point tracking complete."
     )
     return (
         video_file_path,
@@ -1122,7 +1113,6 @@ def track(
         gr.update(minimum=0, maximum=total_frame_count - 1, value=0, interactive=True),
         painted_video[0],
         gr.update(interactive=True),
-        gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
         gr.update(value=0, interactive=has_selected_points),
@@ -1187,7 +1177,6 @@ def reprocess_with_refinements(
             gr.update(),
             gr.update(),
             gr.update(),
-            gr.update(),
             message,
         )
 
@@ -1199,7 +1188,6 @@ def reprocess_with_refinements(
         message = "Add or select at least one point prompt before re-processing."
         gr.Warning(message, duration=5)
         return (
-            gr.update(),
             gr.update(),
             gr.update(),
             gr.update(),
@@ -1240,7 +1228,7 @@ def reprocess_with_refinements(
         refinement_query_points,
         tracked_prompt_sources,
     )
-    result[11] = gr.update(interactive=True)
+    result[10] = gr.update(interactive=True)
     result[-1] = (
         f"Re-processing complete with {merged_query_count} point prompt(s). "
         "Query points on video has been replaced."
@@ -1252,50 +1240,31 @@ def reprocess_with_refinements(
     )
 
 
-def store_frames_from_state(video_frames):
+def export_no_wound_frames_from_state(video_frames):
     if video_frames is None:
-        message = "Submit and track a video before storing frames."
+        message = "Submit a video before exporting no-wound frames."
         gr.Warning(message, duration=5)
         return message
 
     try:
-        written_paths = store_original_frames(video_frames, DEFAULT_FRAMES_DIR)
-    except Exception as exc:
-        message = f"Failed to store frames: {exc}"
-        gr.Warning(message, duration=5)
-        return message
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from export_yolo_segmentation_dataset import export_no_wound_frames_to_yolo_dataset
 
-    return f"Stored {len(written_paths)} original frames in {DEFAULT_FRAMES_DIR}."
-
-
-def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks, selected_visibility, selected_point_labels):
-    if selected_tracks is None:
-        message = "Track selected points before storing coordinates."
-        gr.Warning(message, duration=5)
-        return message
-    if video_frames is None or video_preview_array is None:
-        message = "Submit and track a video before storing coordinates."
-        gr.Warning(message, duration=5)
-        return message
-
-    try:
-        written_paths = store_coordinate_arrays(
-            tracks=selected_tracks,
-            output_dir=DEFAULT_COORDINATES_DIR,
-            source_hw=video_preview_array.shape[1:3],
-            target_hw=video_frames.shape[1:3],
-            visibility=selected_visibility,
-            point_labels=selected_point_labels,
+        stats = export_no_wound_frames_to_yolo_dataset(
+            frames=video_frames,
+            output_dir=DEFAULT_YOLO_DATASET_DIR,
+            train_ratio=0.8,
         )
     except Exception as exc:
-        message = f"Failed to store coordinates: {exc}"
+        message = f"Failed to export no-wound frames: {exc}"
         gr.Warning(message, duration=5)
         return message
 
-    frame_files = max(0, len(written_paths) - 1)
     return (
-        f"Stored selected-point coordinates for {frame_files} frames in "
-        f"{DEFAULT_COORDINATES_DIR}."
+        f"Exported {stats.exported_images} no-wound frame(s) to {DEFAULT_YOLO_DATASET_DIR}: "
+        f"{stats.train_images} train and {stats.val_images} val image(s), "
+        "each with an empty label."
     )
 
 
@@ -1849,12 +1818,7 @@ with gr.Blocks() as demo:
                 type="numpy",
                 interactive=False,
             )
-            with gr.Row():
-                store_frames_button = gr.Button("Store Frames", interactive=False)
-                store_coordinates_button = gr.Button(
-                    "Store Coordinates of Tracked Object",
-                    interactive=False,
-                )
+            no_wound_export_button = gr.Button("Export No-Wound Frames to YOLO", interactive=False)
             export_status = gr.Textbox(
                 label="Export Status",
                 interactive=False,
@@ -1970,8 +1934,7 @@ with gr.Blocks() as demo:
             selected_visibility,
             selected_point_labels,
             tracked_prompt_sources,
-            store_frames_button,
-            store_coordinates_button,
+            no_wound_export_button,
             sam_model_dropdown,
             sam_preview_button,
             sam_preview_image,
@@ -2109,8 +2072,7 @@ with gr.Blocks() as demo:
             tracked_frame_preview,
             refinement_query_points,
             reprocess_button,
-            store_frames_button,
-            store_coordinates_button,
+            no_wound_export_button,
             processed_sam_model_dropdown,
             processed_sam_preview_button,
             processed_sam_video_skip_frames,
@@ -2226,8 +2188,7 @@ with gr.Blocks() as demo:
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
-            store_frames_button,
-            store_coordinates_button,
+            no_wound_export_button,
             processed_sam_model_dropdown,
             processed_sam_preview_button,
             processed_sam_video_skip_frames,
@@ -2238,25 +2199,10 @@ with gr.Blocks() as demo:
         queue = False,
     )
 
-    store_frames_button.click(
-        fn = store_frames_from_state,
+    no_wound_export_button.click(
+        fn = export_no_wound_frames_from_state,
         inputs = [
             video,
-        ],
-        outputs = [
-            export_status,
-        ],
-        queue = False,
-    )
-
-    store_coordinates_button.click(
-        fn = store_coordinates_from_state,
-        inputs = [
-            video,
-            video_preview,
-            selected_tracks,
-            selected_visibility,
-            selected_point_labels,
         ],
         outputs = [
             export_status,
