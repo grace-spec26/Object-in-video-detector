@@ -8,6 +8,7 @@ os.environ["GRADIO_SKIP_PYI_GENERATION"] = "1"
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
+import hashlib
 import sys
 import threading
 import uuid
@@ -314,6 +315,8 @@ DEFAULT_RAW_MASK_ROOT = PROJECT_ROOT / "raw-mask-data"
 DEFAULT_YOLO_DATASET_DIR = PROJECT_ROOT / "dataset"
 sam_preview_runtime_lock = threading.Lock()
 sam_preview_runtimes = {}
+sam_preview_preload_lock = threading.Lock()
+sam_preview_preload_started = set()
 
 
 def point_label_from_choice(point_type):
@@ -891,6 +894,8 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
 
+    start_sam_preview_preload(DEFAULT_SAM_IMAGE_MODEL)
+
     video_arr = mediapy.read_video(video_path)
     source_video_fps = float(video_arr.metadata.fps)
     video_fps = source_video_fps
@@ -1317,12 +1322,41 @@ def get_sam_preview_runtime(sam_model):
         )
         runtime = {
             "predictor": predictor,
+            "predictor_lock": threading.Lock(),
             "device": device,
             "model_name": model_name,
             "model_label": model_option["label"],
+            "image_cache_key": None,
         }
         sam_preview_runtimes[model_name] = runtime
         return runtime
+
+
+def preload_sam_preview_runtime(sam_model):
+    try:
+        runtime = get_sam_preview_runtime(sam_model)
+        print(
+            f"SAM preview model preloaded: {runtime['model_label']} on {runtime['device']}",
+            flush=True,
+        )
+    except Exception as exc:
+        print(f"SAM preview model preload failed for {sam_model}: {exc}", flush=True)
+
+
+def start_sam_preview_preload(sam_model=DEFAULT_SAM_IMAGE_MODEL):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    with sam_preview_preload_lock:
+        if model_name in sam_preview_preload_started or model_name in sam_preview_runtimes:
+            return
+        sam_preview_preload_started.add(model_name)
+
+    thread = threading.Thread(
+        target=preload_sam_preview_runtime,
+        args=(model_name,),
+        daemon=True,
+        name=f"sam-preview-preload-{model_name}",
+    )
+    thread.start()
 
 
 def as_uint8_rgb_frame(frame):
@@ -1336,6 +1370,27 @@ def as_uint8_rgb_frame(frame):
             image = image * 255
         image = np.clip(image, 0, 255).astype(np.uint8)
     return image.copy()
+
+
+def sam_preview_frame_cache_key(frame):
+    image = np.ascontiguousarray(as_uint8_rgb_frame(frame))
+    digest = hashlib.blake2b(image.tobytes(), digest_size=16).hexdigest()
+    return image.shape, str(image.dtype), digest
+
+
+def predict_sam_preview_mask(runtime, frame, point_coords, point_labels):
+    frame_cache_key = sam_preview_frame_cache_key(frame)
+    predictor = runtime["predictor"]
+    with runtime["predictor_lock"]:
+        if runtime.get("image_cache_key") != frame_cache_key:
+            predictor.set_image(frame)
+            runtime["image_cache_key"] = frame_cache_key
+        return predictor.predict(
+            point_coords=point_coords.astype(np.float32),
+            point_labels=point_labels.astype(np.int32),
+            multimask_output=len(point_coords) == 1,
+            normalize_coords=True,
+        )
 
 
 def draw_sam_preview(frame, mask, point_coords, point_labels):
@@ -1481,15 +1536,8 @@ def preview_sam_on_frame(
         return as_uint8_rgb_frame(video_frames[frame_index]), message
 
     runtime = get_sam_preview_runtime(sam_model)
-    predictor = runtime["predictor"]
     frame = as_uint8_rgb_frame(video_frames[frame_index])
-    predictor.set_image(frame)
-    masks, scores, _ = predictor.predict(
-        point_coords=point_coords.astype(np.float32),
-        point_labels=point_labels.astype(np.int32),
-        multimask_output=len(point_coords) == 1,
-        normalize_coords=True,
-    )
+    masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
     best_mask = masks[int(np.argmax(scores))]
     preview = draw_sam_preview(frame, best_mask, point_coords, point_labels)
     positive_count = int(np.sum(point_labels == 1))

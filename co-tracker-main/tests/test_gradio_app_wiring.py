@@ -87,6 +87,25 @@ class GradioAppWiringTest(unittest.TestCase):
             second_step_block.index("sam_preview_image = gr.Image"),
         )
 
+    def test_sam_preview_preloads_default_model_in_background(self):
+        app_source = APP_PATH.read_text()
+
+        self.assertIn("def start_sam_preview_preload", app_source)
+        self.assertIn("threading.Thread", app_source)
+        self.assertIn("start_sam_preview_preload(DEFAULT_SAM_IMAGE_MODEL)", app_source)
+
+    def test_sam_preview_reuses_frame_embedding_for_same_frame(self):
+        app_source = APP_PATH.read_text()
+        preview_fn = app_source.split("def preview_sam_on_frame", maxsplit=1)[1]
+        preview_fn = preview_fn.split("def preview_sam_for_selected_frame", maxsplit=1)[0]
+
+        self.assertIn("def sam_preview_frame_cache_key", app_source)
+        self.assertIn("def predict_sam_preview_mask", app_source)
+        self.assertIn('"image_cache_key"', app_source)
+        self.assertIn('"predictor_lock"', app_source)
+        self.assertIn("predict_sam_preview_mask", preview_fn)
+        self.assertNotIn("predictor.set_image", preview_fn)
+
     def test_third_step_has_processed_frame_and_sam_preview_blocks(self):
         app_source = APP_PATH.read_text()
 
