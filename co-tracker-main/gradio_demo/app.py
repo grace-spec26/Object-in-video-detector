@@ -1785,21 +1785,21 @@ with gr.Blocks() as demo:
                     interactive=False,
                 )
                 sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
-            sam_preview_image = gr.Image(
-                label="SAM point preview",
-                type="numpy",
+            output_video = gr.Video(
+                label="Output Video",
                 interactive=False,
+                autoplay=True,
+                loop=True,
             )
             
             with gr.Row():
                 track_button = gr.Button("Track", interactive=False)
 
         with gr.Column():
-            output_video = gr.Video(
-                label="Output Video",
+            sam_preview_image = gr.Image(
+                label="SAM point preview",
+                type="numpy",
                 interactive=False,
-                autoplay=True,
-                loop=True,
             )
             with gr.Row():
                 store_frames_button = gr.Button("Store Frames", interactive=False)

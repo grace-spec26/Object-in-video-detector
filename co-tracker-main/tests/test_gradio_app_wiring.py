@@ -78,6 +78,15 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("sam_preview_image = gr.Image", second_step_block)
         self.assertIn('label="SAM point preview"', second_step_block)
 
+    def test_second_step_shows_output_video_before_sam_point_preview(self):
+        app_source = APP_PATH.read_text()
+        second_step_block = app_source.split("## Third step:", maxsplit=1)[0]
+
+        self.assertLess(
+            second_step_block.index("output_video = gr.Video"),
+            second_step_block.index("sam_preview_image = gr.Image"),
+        )
+
     def test_third_step_has_processed_frame_and_sam_preview_blocks(self):
         app_source = APP_PATH.read_text()
 
