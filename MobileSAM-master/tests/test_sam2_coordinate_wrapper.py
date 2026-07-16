@@ -1,6 +1,7 @@
 import json
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,11 +11,14 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import sam2_coordinate_wrapper as sam2_wrapper  # noqa: E402
 from sam2_coordinate_wrapper import (  # noqa: E402
     DEFAULT_SAM2_MODEL,
     SAM2_MODEL_CHOICES,
+    checkpoint_file_looks_unavailable,
     iter_sam2_coordinate_prompt_folder_steps,
     load_sam2_prompt_objects,
+    resolve_sam2_checkpoint,
     resolve_sam2_model_option,
     run_sam2_for_frame,
     select_frames_for_frame_step,
@@ -73,6 +77,38 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
     def test_sam2_model_option_rejects_unknown_model(self):
         with self.assertRaisesRegex(ValueError, "sam2.1_hiera_small.pt"):
             resolve_sam2_model_option("bad-model.pt")
+
+    def test_sparse_checkpoint_file_looks_unavailable(self):
+        sparse_stat = type("StatResult", (), {"st_size": 1024 * 1024, "st_blocks": 0})()
+        normal_stat = type("StatResult", (), {"st_size": 1024 * 1024, "st_blocks": 8})()
+
+        with patch.object(sam2_wrapper.Path, "stat", return_value=sparse_stat):
+            self.assertTrue(checkpoint_file_looks_unavailable(Path("placeholder.pt")))
+        with patch.object(sam2_wrapper.Path, "stat", return_value=normal_stat):
+            self.assertFalse(checkpoint_file_looks_unavailable(Path("normal.pt")))
+
+    def test_resolve_checkpoint_redownloads_unavailable_model_file(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            placeholder = tmp_path / "sam2.1_hiera_tiny.pt"
+            replacement = tmp_path / "replacement.pt"
+            with placeholder.open("wb") as handle:
+                handle.truncate(1024 * 1024)
+            replacement.write_bytes(b"downloaded-checkpoint")
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.object(
+                    sam2_wrapper,
+                    "download_sam2_checkpoint",
+                    return_value=replacement,
+                ) as download:
+                    resolved = resolve_sam2_checkpoint(
+                        model_name="sam2.1_hiera_tiny.pt",
+                        download_checkpoint=True,
+                    )
+
+            self.assertEqual(resolved, replacement)
+            download.assert_called_once_with("sam2.1_hiera_tiny.pt")
 
     def test_load_sam2_prompt_objects_uses_augmented_json_directly(self):
         with TemporaryDirectory() as tmp:

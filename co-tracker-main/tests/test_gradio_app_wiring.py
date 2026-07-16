@@ -154,6 +154,30 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("predict_sam_preview_mask", preview_fn)
         self.assertNotIn("predictor.set_image", preview_fn)
 
+    def test_single_frame_sam_preview_returns_while_model_preloads(self):
+        app_source = APP_PATH.read_text()
+        preview_fn = app_source.split("def preview_sam_on_frame", maxsplit=1)[1]
+        preview_fn = preview_fn.split("def preview_sam_for_selected_frame", maxsplit=1)[0]
+
+        self.assertIn("def get_sam_preview_runtime_if_ready", app_source)
+        self.assertIn("sam_preview_runtime_lock.acquire(blocking=False)", app_source)
+        self.assertIn("runtime, loading_message = get_sam_preview_runtime_if_ready(sam_model)", preview_fn)
+        self.assertIn("return frame, loading_message", preview_fn)
+        self.assertNotIn("runtime = get_sam_preview_runtime(sam_model)", preview_fn)
+
+    def test_lock_busy_sam_preview_prequeues_requested_model(self):
+        app_source = APP_PATH.read_text()
+        runtime_fn = app_source.split("def get_sam_preview_runtime_if_ready", maxsplit=1)[1]
+        runtime_fn = runtime_fn.split("def as_uint8_rgb_frame", maxsplit=1)[0]
+        lock_busy_branch = runtime_fn.split("if not acquired:", maxsplit=1)[1]
+        lock_busy_branch = lock_busy_branch.split("try:", maxsplit=1)[0]
+
+        self.assertIn("start_sam_preview_preload(model_name)", lock_busy_branch)
+        self.assertLess(
+            lock_busy_branch.index("start_sam_preview_preload(model_name)"),
+            lock_busy_branch.index("return None, runtime_message"),
+        )
+
     def test_third_step_has_processed_frame_and_sam_preview_blocks(self):
         app_source = APP_PATH.read_text()
 

@@ -79,6 +79,17 @@ def resolve_sam2_model_option(model_name: Optional[str] = None) -> Dict[str, Any
     return option
 
 
+def checkpoint_file_looks_unavailable(checkpoint_path: Path) -> bool:
+    """Detect cloud/sparse placeholder checkpoints before torch.load can hang."""
+    try:
+        stat_result = Path(checkpoint_path).stat()
+    except FileNotFoundError:
+        return False
+
+    allocated_blocks = getattr(stat_result, "st_blocks", None)
+    return stat_result.st_size > 0 and allocated_blocks == 0
+
+
 def _ensure_sam2_on_path() -> None:
     if not SAM2_REPO_ROOT.exists():
         raise FileNotFoundError(f"SAM2 repo not found: {SAM2_REPO_ROOT}")
@@ -182,6 +193,14 @@ def resolve_sam2_checkpoint(
         raise FileNotFoundError(
             f"SAM2 checkpoint not found: {resolved}. "
             f"Download {checkpoint_hint} into sam2/checkpoints/."
+        )
+
+    if checkpoint_file_looks_unavailable(resolved):
+        if checkpoint is None and download_checkpoint:
+            return download_sam2_checkpoint(model_name)
+        raise FileNotFoundError(
+            f"SAM2 checkpoint appears to be an unavailable sparse/cloud placeholder: {resolved}. "
+            f"Re-download {checkpoint_hint} into sam2/checkpoints/."
         )
     return resolved
 

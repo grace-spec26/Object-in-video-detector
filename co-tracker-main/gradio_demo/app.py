@@ -314,6 +314,7 @@ sam_preview_runtime_lock = threading.Lock()
 sam_preview_runtimes = {}
 sam_preview_preload_lock = threading.Lock()
 sam_preview_preload_started = set()
+sam_preview_preload_errors = {}
 
 
 def point_label_from_choice(point_type):
@@ -1354,14 +1355,20 @@ def get_sam_preview_runtime(sam_model):
 
 
 def preload_sam_preview_runtime(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
     try:
-        runtime = get_sam_preview_runtime(sam_model)
+        runtime = get_sam_preview_runtime(model_name)
+        with sam_preview_preload_lock:
+            sam_preview_preload_errors.pop(model_name, None)
         print(
             f"SAM preview model preloaded: {runtime['model_label']} on {runtime['device']}",
             flush=True,
         )
     except Exception as exc:
-        print(f"SAM preview model preload failed for {sam_model}: {exc}", flush=True)
+        with sam_preview_preload_lock:
+            sam_preview_preload_errors[model_name] = str(exc)
+            sam_preview_preload_started.discard(model_name)
+        print(f"SAM preview model preload failed for {model_name}: {exc}", flush=True)
 
 
 def start_sam_preview_preload(sam_model=DEFAULT_SAM_IMAGE_MODEL):
@@ -1378,6 +1385,37 @@ def start_sam_preview_preload(sam_model=DEFAULT_SAM_IMAGE_MODEL):
         name=f"sam-preview-preload-{model_name}",
     )
     thread.start()
+
+
+def get_sam_preview_runtime_if_ready(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    runtime_message = (
+        f"SAM preview model {model_name} is still loading or downloading. "
+        "Try Preview SAM again in a moment."
+    )
+
+    acquired = sam_preview_runtime_lock.acquire(blocking=False)
+    if not acquired:
+        start_sam_preview_preload(model_name)
+        return None, runtime_message
+
+    try:
+        runtime = sam_preview_runtimes.get(model_name)
+        if runtime is not None:
+            return runtime, None
+    finally:
+        sam_preview_runtime_lock.release()
+
+    with sam_preview_preload_lock:
+        previous_error = sam_preview_preload_errors.get(model_name)
+    start_sam_preview_preload(model_name)
+    if previous_error:
+        return (
+            None,
+            f"SAM preview model {model_name} failed to load previously: {previous_error}. "
+            "Retrying in the background.",
+        )
+    return None, runtime_message
 
 
 def as_uint8_rgb_frame(frame):
@@ -1556,8 +1594,11 @@ def preview_sam_on_frame(
         gr.Warning(message, duration=5)
         return as_uint8_rgb_frame(video_frames[frame_index]), message
 
-    runtime = get_sam_preview_runtime(sam_model)
     frame = as_uint8_rgb_frame(video_frames[frame_index])
+    runtime, loading_message = get_sam_preview_runtime_if_ready(sam_model)
+    if runtime is None:
+        return frame, loading_message
+
     masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
     best_mask = masks[int(np.argmax(scores))]
     preview = draw_sam_preview(frame, best_mask, point_coords, point_labels)
