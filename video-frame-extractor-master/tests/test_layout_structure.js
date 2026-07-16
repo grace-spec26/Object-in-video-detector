@@ -36,8 +36,12 @@ for (const id of ['segmentList', 'addSegmentBottomBtn']) {
 }
 
 assert(html.includes('.video-workspace {'), 'Expected video-workspace CSS')
-assert(html.includes('grid-template-columns: minmax(0, 1fr) minmax(320px, 380px)'), 'Expected desktop two-column workspace grid')
+assert(html.includes('padding: 10px;'), 'Expected a compact outer purple boundary')
+assert(html.includes('max-width: 1800px;'), 'Expected a wide desktop workspace')
+assert(html.includes('grid-template-columns: minmax(0, 1fr) minmax(300px, 360px)'), 'Expected a space-efficient desktop workspace grid')
+assert(html.includes('max-height: 72vh;'), 'Expected the video to use available viewport space')
 assert(html.includes('.video-workspace.hidden {'), 'Expected hidden workspace override')
 assert(html.includes('@media (max-width: 900px)'), 'Expected responsive single-column workspace media query')
+assert(html.includes('@media (max-width: 600px)'), 'Expected compact segment controls on narrow screens')
 assert(html.includes("const videoWorkspace = document.getElementById('videoWorkspace')"), 'Expected videoWorkspace DOM reference')
 assert(html.includes("videoWorkspace.classList.remove('hidden')"), 'Expected workspace to be shown when video loads')
