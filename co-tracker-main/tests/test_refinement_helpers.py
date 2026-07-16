@@ -5,6 +5,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gradio_demo"))
 
+import refinement_helpers  # noqa: E402
+
 from refinement_helpers import (  # noqa: E402
     append_refinement_point,
     clear_all_refinement_points,
@@ -60,6 +62,33 @@ class RefinementHelpersTest(unittest.TestCase):
 
         self.assertFalse(removed)
         self.assertEqual(updated, points)
+
+    def test_remove_nearest_frame_point_removes_matching_value_without_mutating_input(self):
+        points = [
+            [(100.0, 100.0, 0, 1)],
+            [(10.0, 10.0, 1, 1), (30.0, 30.0, 1, 0)],
+        ]
+        colors = [
+            [(0, 255, 0)],
+            [(0, 255, 0), (255, 0, 0)],
+        ]
+
+        self.assertTrue(hasattr(refinement_helpers, "remove_nearest_frame_point"))
+        updated_points, updated_colors, removed = refinement_helpers.remove_nearest_frame_point(
+            points,
+            colors,
+            frame_index=1,
+            x=29.0,
+            y=31.0,
+            max_distance=5.0,
+        )
+
+        self.assertTrue(removed)
+        self.assertEqual(points[1], [(10.0, 10.0, 1, 1), (30.0, 30.0, 1, 0)])
+        self.assertEqual(colors[1], [(0, 255, 0), (255, 0, 0)])
+        self.assertEqual(updated_points[0], points[0])
+        self.assertEqual(updated_points[1], [(10.0, 10.0, 1, 1)])
+        self.assertEqual(updated_colors[1], [(0, 255, 0)])
 
     def test_pop_refinement_point_removes_last_point_on_selected_frame(self):
         points = [[(1.0, 1.0, 0, 1), (2.0, 2.0, 0, 0)]]

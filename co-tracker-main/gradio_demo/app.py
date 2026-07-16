@@ -47,6 +47,7 @@ try:
         pending_refinement_points,
         pop_refinement_point,
         remove_prompt_by_source,
+        remove_nearest_frame_point,
         remove_nearest_refinement_point,
     )
     from .tracking_helpers import (
@@ -85,6 +86,7 @@ except ImportError:
         pending_refinement_points,
         pop_refinement_point,
         remove_prompt_by_source,
+        remove_nearest_frame_point,
         remove_nearest_refinement_point,
     )
     from tracking_helpers import (
@@ -290,6 +292,9 @@ POINT_COLORS = {
     1: (0, 255, 0),
     0: (255, 0, 0),
 }
+POINT_ADD_MODE = "Add"
+POINT_DELETE_NEAREST_MODE = "Delete nearest"
+POINT_EDIT_MODE_CHOICES = (POINT_ADD_MODE, POINT_DELETE_NEAREST_MODE)
 REFINEMENT_ADD_MODE = "Add"
 REFINEMENT_DELETE_MODE = "Delete nearest"
 REFINEMENT_EDIT_MODE_CHOICES = (REFINEMENT_ADD_MODE, REFINEMENT_DELETE_MODE)
@@ -338,29 +343,78 @@ def draw_query_point(frame, x, y, point_label):
     return frame
 
 
-def get_point(frame_num, point_type, video_queried_preview, query_points, query_points_color, query_count, evt: gr.SelectData):
+def redraw_query_frame(frame, frame_points):
+    frame_draw = np.asarray(frame).copy()
+    for point in frame_points or []:
+        x, y, _, point_label = unpack_query_point(point)
+        frame_draw = draw_query_point(frame_draw, x, y, point_label)
+    return frame_draw
+
+
+def get_point(
+    frame_num,
+    point_type,
+    point_edit_mode,
+    video_preview,
+    video_queried_preview,
+    query_points,
+    query_points_color,
+    query_count,
+    evt: gr.SelectData,
+):
     print(f"You selected {(evt.index[0], evt.index[1], frame_num)}")
 
-    current_frame = video_queried_preview[int(frame_num)]
+    frame_index = int(frame_num)
+    x, y = evt.index
+
+    if str(point_edit_mode) == POINT_DELETE_NEAREST_MODE:
+        max_distance = max(18.0, POINT_PROMPT_RADIUS * 6.0)
+        updated_points, updated_colors, removed = remove_nearest_frame_point(
+            query_points,
+            query_points_color,
+            frame_index=frame_index,
+            x=x,
+            y=y,
+            max_distance=max_distance,
+        )
+        if removed:
+            query_points = updated_points
+            query_points_color = updated_colors
+            query_count = max(0, int(query_count) - 1)
+            current_frame_draw = redraw_query_frame(video_preview[frame_index], query_points[frame_index])
+            video_queried_preview[frame_index] = current_frame_draw
+        else:
+            current_frame_draw = video_queried_preview[frame_index]
+
+        has_points = count_frame_points(query_points) > 0
+        return (
+            current_frame_draw,
+            video_queried_preview,
+            query_points,
+            query_points_color,
+            query_count,
+            gr.update(interactive=has_points),
+            gr.update(interactive=has_points),
+        )
 
     # Get the mouse click
     point_label = point_label_from_choice(point_type)
-    query_points[int(frame_num)].append((evt.index[0], evt.index[1], frame_num, point_label))
+    query_points[frame_index].append((x, y, frame_index, point_label))
 
     # Choose the color for the point from matplotlib colormap
     color = POINT_COLORS[point_label]
     # print(f"Color: {color}")
-    query_points_color[int(frame_num)].append(color)
+    query_points_color[frame_index].append(color)
 
     # Draw the point on the frame
-    x, y = evt.index
+    current_frame = video_queried_preview[frame_index]
     current_frame_draw = draw_query_point(current_frame, x, y, point_label)
 
     # Update the frame
-    video_queried_preview[int(frame_num)] = current_frame_draw
+    video_queried_preview[frame_index] = current_frame_draw
 
     # Update the query count
-    query_count += 1
+    query_count = int(query_count) + 1
     return (
         current_frame_draw, # Updated frame for preview
         video_queried_preview, # Updated preview video
@@ -388,9 +442,7 @@ def undo_point(frame_num, video_preview, video_queried_preview, query_points, qu
 
     # Redraw the frame
     current_frame_draw = video_preview[int(frame_num)].copy()
-    for point, color in zip(query_points[int(frame_num)], query_points_color[int(frame_num)]):
-        x, y, _, point_label = unpack_query_point(point)
-        current_frame_draw = draw_query_point(current_frame_draw, x, y, point_label)
+    current_frame_draw = redraw_query_frame(video_preview[int(frame_num)], query_points[int(frame_num)])
 
     # Update the query count
     query_count -= 1
@@ -1783,6 +1835,12 @@ with gr.Blocks() as demo:
                     label="Point Type",
                     interactive=True,
                 )
+                query_point_edit_mode = gr.Radio(
+                    choices=list(POINT_EDIT_MODE_CHOICES),
+                    value=POINT_ADD_MODE,
+                    label="Mode",
+                    interactive=True,
+                )
             with gr.Row():
                 undo = gr.Button("Undo", interactive=False)
                 clear_frame = gr.Button("Clear Frame", interactive=False)
@@ -1790,7 +1848,7 @@ with gr.Blocks() as demo:
 
             with gr.Row():
                 current_frame = gr.Image(
-                    label="Click to add query points", 
+                    label="Click to add/delete query points",
                     type="numpy",
                     interactive=False
                 )
@@ -1977,6 +2035,8 @@ with gr.Blocks() as demo:
         inputs = [
             query_frames,
             point_type,
+            query_point_edit_mode,
+            video_preview,
             video_queried_preview,
             query_points,
             query_points_color,

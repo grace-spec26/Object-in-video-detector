@@ -25,6 +25,25 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("point_type", match.group(1))
         self.assertIn("fn = get_point", match.group(1))
 
+    def test_second_step_has_add_delete_mode_control_for_query_points(self):
+        app_source = APP_PATH.read_text()
+        second_step_block = app_source.split("## Third step:", maxsplit=1)[0]
+
+        self.assertIn("query_point_edit_mode = gr.Radio", second_step_block)
+        self.assertIn("POINT_EDIT_MODE_CHOICES", second_step_block)
+        self.assertIn('label="Mode"', second_step_block)
+        self.assertIn("value=POINT_ADD_MODE", second_step_block)
+
+    def test_second_step_click_handler_can_delete_nearest_query_point(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"current_frame\.select\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("query_point_edit_mode", match.group(1))
+        self.assertRegex(app_source, r"def get_point\([^)]*point_edit_mode")
+        self.assertIn("POINT_DELETE_NEAREST_MODE", app_source)
+        self.assertIn("remove_nearest_frame_point", app_source)
+
     def test_second_step_sam_preview_button_uses_current_query_frame(self):
         app_source = APP_PATH.read_text()
         match = re.search(r"sam_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)

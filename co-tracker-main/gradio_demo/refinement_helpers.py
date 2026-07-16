@@ -56,6 +56,29 @@ def remove_nearest_refinement_point(points_by_frame, frame_index, x, y, max_dist
     return updated, True
 
 
+def remove_nearest_frame_point(points_by_frame, values_by_frame, frame_index, x, y, max_distance=12.0):
+    updated_points = copy_frame_points(points_by_frame)
+    updated_values = copy_frame_values(values_by_frame)
+    frame_index = _clamp_frame_index(frame_index, len(updated_points))
+    while len(updated_values) < len(updated_points):
+        updated_values.append([])
+    updated_values = updated_values[:len(updated_points)]
+
+    frame_points = updated_points[frame_index]
+    if not frame_points:
+        return updated_points, updated_values, False
+
+    distances = [hypot(float(point[0]) - float(x), float(point[1]) - float(y)) for point in frame_points]
+    nearest_index = min(range(len(distances)), key=distances.__getitem__)
+    if distances[nearest_index] > float(max_distance):
+        return updated_points, updated_values, False
+
+    del frame_points[nearest_index]
+    if nearest_index < len(updated_values[frame_index]):
+        del updated_values[frame_index][nearest_index]
+    return updated_points, updated_values, True
+
+
 def pop_refinement_point(points_by_frame, frame_index):
     updated = copy_frame_points(points_by_frame)
     frame_index = _clamp_frame_index(frame_index, len(updated))
