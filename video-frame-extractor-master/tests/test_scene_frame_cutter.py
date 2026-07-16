@@ -1,5 +1,11 @@
+import sys
+import unittest
+from tempfile import TemporaryDirectory
+from pathlib import Path
+
 from scene_frame_cutter import (
     _scene_list_to_switches,
+    detect_camera_switches,
     detect_camera_switch_times,
     format_seconds_mmssmmm,
 )
@@ -54,3 +60,57 @@ def test_detect_camera_switch_times_returns_formatted_timestamps(monkeypatch):
     )
 
     assert detect_camera_switch_times("example.mp4") == ["00:12:345"]
+
+
+class SceneFrameCutterDefaultsTest(unittest.TestCase):
+    def test_detect_camera_switches_uses_more_sensitive_defaults(self):
+        detector_calls = []
+        detect_calls = []
+
+        class FakeAdaptiveDetector:
+            def __init__(self, **kwargs):
+                detector_calls.append(kwargs)
+
+        def fake_detect(video_path, detector, **kwargs):
+            detect_calls.append((video_path, detector, kwargs))
+            return [
+                (FakeTimecode(0, 0), FakeTimecode(1.25, 30)),
+                (FakeTimecode(1.25, 30), FakeTimecode(2.0, 48)),
+            ]
+
+        fake_scene_detect = type(
+            "FakeSceneDetect",
+            (),
+            {
+                "AdaptiveDetector": FakeAdaptiveDetector,
+                "detect": staticmethod(fake_detect),
+            },
+        )
+        original_scene_detect = sys.modules.get("scenedetect")
+        sys.modules["scenedetect"] = fake_scene_detect
+
+        try:
+            with TemporaryDirectory() as tmp:
+                fake_video = Path(tmp) / "example.mp4"
+                fake_video.write_bytes(b"video")
+
+                switches = detect_camera_switches(fake_video)
+        finally:
+            if original_scene_detect is None:
+                sys.modules.pop("scenedetect", None)
+            else:
+                sys.modules["scenedetect"] = original_scene_detect
+
+        self.assertEqual([switch.timestamp for switch in switches], ["00:01:250"])
+        self.assertEqual(
+            detector_calls,
+            [
+                {
+                    "adaptive_threshold": 2.0,
+                    "min_scene_len": "0.5s",
+                    "window_width": 2,
+                    "min_content_val": 10.0,
+                }
+            ],
+        )
+        self.assertTrue(detect_calls[0][2]["start_in_scene"])

@@ -45,6 +45,23 @@ function samplesFromDeltas(deltas, interval = 1) {
 {
   const deltas = [
     0,
+    10, 11, 10, 12, 11, 10, 11,
+    16,
+    11, 10, 12, 11, 10, 11, 12,
+    0,
+  ]
+
+  const switches = context.detectCameraSwitchTimes(samplesFromDeltas(deltas), 17, 1)
+
+  assert(
+    switches.some(time => Math.abs(time - 8) < 0.001),
+    `expected moderate isolated camera switch at 8s to be detected, got ${JSON.stringify(switches)}`,
+  )
+}
+
+{
+  const deltas = [
+    0,
     11, 12, 11, 12, 13, 12, 11,
     12, 13, 12, 11, 12, 13, 12,
     0,

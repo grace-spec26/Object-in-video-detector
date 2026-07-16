@@ -1618,7 +1618,7 @@
         // prominence check catches smaller sharp cuts in long/high-motion
         // videos where global statistics can otherwise rise too high.
         const iqr = q3 - q1
-        const threshold = Math.max(12, q90, median + mad * 6, q3 + iqr * 1.5)
+        const threshold = Math.max(8, q90, median + mad * 4, q3 + iqr * 1.1)
         const localRadiusSamples = Math.max(3, Math.ceil(6 / Math.max(interval, 0.001)))
         const minGapSeconds = Math.max(1, interval * 2)
         const edgeGapSeconds = Math.max(0.2, interval * 0.5)
@@ -1642,10 +1642,10 @@
           ].filter(Boolean)
           const localStats = localStatsOptions.sort((a, b) => a.median - b.median)[0]
           const localProminence = localStats
-            ? Math.max(8, localStats.mad * 5, localStats.iqr * 1.5)
+            ? Math.max(5, localStats.mad * 3.5, localStats.iqr * 1.1)
             : Infinity
           const localPeak = localStats
-            ? cur >= Math.max(10, localStats.median + localProminence)
+            ? cur >= Math.max(7, localStats.median + localProminence)
             : false
           if (!globalPeak && !localPeak) continue
 

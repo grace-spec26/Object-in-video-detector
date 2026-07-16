@@ -37,8 +37,8 @@ Tune adaptive detection if needed:
 
 ```bash
 python video-frame-extractor-master/scene_frame_cutter.py input.mp4 \
-  --adaptive-threshold 3.0 \
+  --adaptive-threshold 2.0 \
   --min-scene-len 0.5s \
   --window-width 2 \
-  --min-content-val 15.0
+  --min-content-val 10.0
 ```

@@ -82,10 +82,10 @@ def _scene_list_to_switches(scene_list: Sequence[Tuple[object, object]]) -> List
 def detect_camera_switches(
     video_path: str | Path,
     *,
-    adaptive_threshold: float = 3.0,
+    adaptive_threshold: float = 2.0,
     min_scene_len: int | float | str = "0.5s",
     window_width: int = 2,
-    min_content_val: float = 15.0,
+    min_content_val: float = 10.0,
     show_progress: bool = False,
 ) -> List[CameraSwitch]:
     """Detect camera switches in a video using PySceneDetect AdaptiveDetector.
@@ -200,10 +200,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--json", help="Optional JSON metadata output path.")
     parser.add_argument("--csv", help="Optional CSV metadata output path.")
-    parser.add_argument("--adaptive-threshold", type=float, default=3.0)
+    parser.add_argument("--adaptive-threshold", type=float, default=2.0)
     parser.add_argument("--min-scene-len", default="0.5s")
     parser.add_argument("--window-width", type=int, default=2)
-    parser.add_argument("--min-content-val", type=float, default=15.0)
+    parser.add_argument("--min-content-val", type=float, default=10.0)
     parser.add_argument("--image-extension", default="jpg", choices=["jpg", "jpeg", "png"])
     parser.add_argument("--jpeg-quality", type=int, default=95)
     parser.add_argument("--show-progress", action="store_true")
