@@ -9,14 +9,29 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
 import hashlib
+import importlib.metadata as importlib_metadata
+from contextlib import contextmanager
 import sys
 import threading
 import uuid
 from pathlib import Path
 
-import gradio as gr
-from gradio import data_classes as gradio_data_classes
-from gradio import networking as gradio_networking
+
+@contextmanager
+def suppress_importlib_entry_points():
+    original_entry_points = importlib_metadata.entry_points
+    importlib_metadata.entry_points = lambda *args, **kwargs: {}
+    try:
+        yield
+    finally:
+        importlib_metadata.entry_points = original_entry_points
+
+
+with suppress_importlib_entry_points():
+    import gradio as gr
+    from gradio import data_classes as gradio_data_classes
+    from gradio import networking as gradio_networking
+
 import mediapy
 import numpy as np
 import cv2
@@ -35,14 +50,8 @@ def get_torch():
     if _torch_module is not None:
         return _torch_module
 
-    import importlib.metadata as importlib_metadata
-
-    original_entry_points = importlib_metadata.entry_points
-    importlib_metadata.entry_points = lambda *args, **kwargs: {}
-    try:
+    with suppress_importlib_entry_points():
         import torch as torch_module
-    finally:
-        importlib_metadata.entry_points = original_entry_points
 
     _torch_module = torch_module
     return _torch_module
