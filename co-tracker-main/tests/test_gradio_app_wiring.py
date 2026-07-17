@@ -352,6 +352,7 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("processed_sam_video_skip_frames = gr.Number", third_step_block)
         self.assertIn('label="Skip frames after each loaded frame (0 = keep all)"', third_step_block)
         self.assertIn('processed_sam_video_button = gr.Button("Preview SAM on Processed Video"', third_step_block)
+        self.assertIn("processed_sam_video_progress = gr.HTML", third_step_block)
         self.assertIn("processed_sam_video = gr.Video", third_step_block)
         self.assertIn('label="SAM video review"', third_step_block)
         self.assertLess(
@@ -360,6 +361,14 @@ class GradioAppWiringTest(unittest.TestCase):
         )
         self.assertLess(
             third_step_block.index("processed_sam_video_skip_frames = gr.Number"),
+            third_step_block.index("processed_sam_video = gr.Video"),
+        )
+        self.assertLess(
+            third_step_block.index("processed_sam_video_button = gr.Button"),
+            third_step_block.index("processed_sam_video_progress = gr.HTML"),
+        )
+        self.assertLess(
+            third_step_block.index("processed_sam_video_progress = gr.HTML"),
             third_step_block.index("processed_sam_video = gr.Video"),
         )
 
@@ -385,7 +394,9 @@ class GradioAppWiringTest(unittest.TestCase):
         ):
             self.assertIn(state_name, match.group(1))
         self.assertIn("processed_sam_video", match.group(1))
+        self.assertIn("processed_sam_video_progress", match.group(1))
         self.assertIn("export_status", match.group(1))
+        self.assertIn("queue = True", match.group(1))
 
     def test_track_and_submit_update_sam_video_review_controls(self):
         app_source = APP_PATH.read_text()
@@ -399,10 +410,13 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("processed_sam_video_button", submit.group(1))
         self.assertIn("processed_sam_video_skip_frames", submit.group(1))
         self.assertIn("processed_sam_video", submit.group(1))
+        self.assertIn("processed_sam_video_progress", submit.group(1))
         self.assertIn("processed_sam_video_button", track.group(1))
         self.assertIn("processed_sam_video_skip_frames", track.group(1))
+        self.assertIn("processed_sam_video_progress", track.group(1))
         self.assertIn("processed_sam_video_button", reprocess.group(1))
         self.assertIn("processed_sam_video_skip_frames", reprocess.group(1))
+        self.assertIn("processed_sam_video_progress", reprocess.group(1))
 
     def test_third_step_has_sam_video_save_and_yolo_export_controls(self):
         app_source = APP_PATH.read_text()
