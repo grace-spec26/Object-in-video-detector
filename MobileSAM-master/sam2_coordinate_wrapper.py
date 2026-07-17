@@ -1,6 +1,8 @@
 import argparse
 import json
 import shutil
+import ssl
+import subprocess
 import sys
 import types
 import urllib.request
@@ -42,24 +44,28 @@ SAM2_MODEL_OPTIONS = {
         "checkpoint_name": "sam2.1_hiera_tiny.pt",
         "config": "configs/sam2.1/sam2.1_hiera_t.yaml",
         "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_tiny.pt",
+        "expected_size": 156008466,
     },
     "sam2.1_hiera_small.pt": {
         "label": "SAM2.1 Hiera Small",
         "checkpoint_name": "sam2.1_hiera_small.pt",
         "config": "configs/sam2.1/sam2.1_hiera_s.yaml",
         "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_small.pt",
+        "expected_size": 184416285,
     },
     "sam2.1_hiera_base_plus.pt": {
         "label": "SAM2.1 Hiera Base Plus",
         "checkpoint_name": "sam2.1_hiera_base_plus.pt",
         "config": "configs/sam2.1/sam2.1_hiera_b+.yaml",
         "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_base_plus.pt",
+        "expected_size": 323606802,
     },
     "sam2.1_hiera_large.pt": {
         "label": "SAM2.1 Hiera Large",
         "checkpoint_name": "sam2.1_hiera_large.pt",
         "config": "configs/sam2.1/sam2.1_hiera_l.yaml",
         "url": f"{SAM2_MODEL_DOWNLOAD_BASE_URL}/sam2.1_hiera_large.pt",
+        "expected_size": 898083611,
     },
 }
 SAM2_MODEL_CHOICES = tuple(SAM2_MODEL_OPTIONS.keys())
@@ -88,6 +94,17 @@ def checkpoint_file_looks_unavailable(checkpoint_path: Path) -> bool:
 
     allocated_blocks = getattr(stat_result, "st_blocks", None)
     return stat_result.st_size > 0 and allocated_blocks == 0
+
+
+def checkpoint_file_looks_incomplete(checkpoint_path: Path, model_option: Dict[str, Any]) -> bool:
+    expected_size = model_option.get("expected_size")
+    if not expected_size:
+        return False
+    try:
+        stat_result = Path(checkpoint_path).stat()
+    except FileNotFoundError:
+        return False
+    return 0 < stat_result.st_size < int(expected_size)
 
 
 def _ensure_sam2_on_path() -> None:
@@ -161,15 +178,74 @@ def install_torchvision_transform_stub_for_sam2() -> None:
     sys.modules["torchvision.transforms"] = transforms_module
 
 
+def python_downloader_should_use_curl_first() -> bool:
+    return "LibreSSL" in getattr(ssl, "OPENSSL_VERSION", "")
+
+
+def download_url_with_curl(url: str, destination: Path, curl_path: str) -> None:
+    command = [
+        curl_path,
+        "--fail",
+        "--location",
+        "--retry",
+        "3",
+        "--connect-timeout",
+        "30",
+    ]
+    if destination.exists() and destination.stat().st_size > 0:
+        command.extend(["--continue-at", "-"])
+    command.extend(["-o", str(destination), url])
+    subprocess.run(command, check=True)
+
+
 def download_sam2_checkpoint(model_name: Optional[str] = None) -> Path:
     model_option = resolve_sam2_model_option(model_name)
     checkpoint_path = Path(model_option["checkpoint"])
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".download")
-    if temporary_path.exists():
-        temporary_path.unlink()
+    curl_path = shutil.which("curl")
 
-    urllib.request.urlretrieve(model_option["url"], temporary_path)
+    if checkpoint_file_looks_incomplete(checkpoint_path, model_option):
+        checkpoint_size = checkpoint_path.stat().st_size
+        temporary_size = temporary_path.stat().st_size if temporary_path.exists() else -1
+        if checkpoint_size > temporary_size:
+            if temporary_path.exists():
+                temporary_path.unlink()
+            checkpoint_path.replace(temporary_path)
+
+    if curl_path and python_downloader_should_use_curl_first():
+        download_url_with_curl(model_option["url"], temporary_path, curl_path)
+    else:
+        if temporary_path.exists():
+            temporary_path.unlink()
+        try:
+            urllib.request.urlretrieve(model_option["url"], temporary_path)
+        except Exception as urllib_error:
+            if not curl_path:
+                if temporary_path.exists() and temporary_path.stat().st_size == 0:
+                    temporary_path.unlink()
+                raise RuntimeError(
+                    f"Failed to download {model_option['checkpoint_name']} with Python urllib, "
+                    "and curl is not available for fallback."
+                ) from urllib_error
+
+            try:
+                download_url_with_curl(model_option["url"], temporary_path, curl_path)
+            except Exception as curl_error:
+                if temporary_path.exists() and temporary_path.stat().st_size == 0:
+                    temporary_path.unlink()
+                raise RuntimeError(
+                    f"Failed to download {model_option['checkpoint_name']} with Python urllib "
+                    "or curl fallback."
+                ) from curl_error
+
+    if not temporary_path.exists() or temporary_path.stat().st_size == 0:
+        raise RuntimeError(f"Downloaded checkpoint is empty: {temporary_path}")
+    if checkpoint_file_looks_incomplete(temporary_path, model_option):
+        raise RuntimeError(
+            f"Downloaded checkpoint is incomplete: {temporary_path} "
+            f"({temporary_path.stat().st_size} of {model_option['expected_size']} bytes)."
+        )
     temporary_path.replace(checkpoint_path)
     return checkpoint_path
 
@@ -200,6 +276,13 @@ def resolve_sam2_checkpoint(
             return download_sam2_checkpoint(model_name)
         raise FileNotFoundError(
             f"SAM2 checkpoint appears to be an unavailable sparse/cloud placeholder: {resolved}. "
+            f"Re-download {checkpoint_hint} into sam2/checkpoints/."
+        )
+    if checkpoint is None and checkpoint_file_looks_incomplete(resolved, model_option):
+        if download_checkpoint:
+            return download_sam2_checkpoint(model_name)
+        raise FileNotFoundError(
+            f"SAM2 checkpoint appears incomplete: {resolved}. "
             f"Re-download {checkpoint_hint} into sam2/checkpoints/."
         )
     return resolved
