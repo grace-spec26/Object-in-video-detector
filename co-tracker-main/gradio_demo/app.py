@@ -21,12 +21,31 @@ import mediapy
 import numpy as np
 import cv2
 import matplotlib
-import torch
 import colorsys
 import random
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
+
+_torch_module = None
+
+
+def get_torch():
+    global _torch_module
+    if _torch_module is not None:
+        return _torch_module
+
+    import importlib.metadata as importlib_metadata
+
+    original_entry_points = importlib_metadata.entry_points
+    importlib_metadata.entry_points = lambda *args, **kwargs: {}
+    try:
+        import torch as torch_module
+    finally:
+        importlib_metadata.entry_points = original_entry_points
+
+    _torch_module = torch_module
+    return _torch_module
 
 try:
     from .export_helpers import (
@@ -144,7 +163,7 @@ def get_points_on_a_grid(
     size: int,
     extent: Tuple[float, ...],
     center: Optional[Tuple[float, ...]] = None,
-    device: Optional[torch.device] = torch.device("cpu"),
+    device: Optional[object] = None,
 ):
     r"""Get a grid of points covering a rectangular region
 
@@ -182,6 +201,10 @@ def get_points_on_a_grid(
     Returns:
         Tensor: grid.
     """
+    torch = get_torch()
+    if device is None:
+        device = torch.device("cpu")
+
     if size == 1:
         return torch.tensor([extent[1] / 2, extent[0] / 2], device=device)[None, None]
 
@@ -1058,6 +1081,7 @@ def track(
     if not has_selected_points:
         tracking_mode='grid'
     
+    torch = get_torch()
     device = resolve_torch_device(torch)
     dtype = torch.float if device == "cuda" else torch.float
     total_frame_count = video_input.shape[0]
@@ -1894,6 +1918,22 @@ with gr.Blocks() as demo:
                     interactive=False
                 )
             with gr.Row():
+                track_button = gr.Button("Track", interactive=False)
+            output_video = gr.Video(
+                label="Output Video",
+                interactive=False,
+                autoplay=True,
+                loop=True,
+            )
+            no_wound_export_button = gr.Button("Export No-Wound Frames to YOLO", interactive=False)
+            export_status = gr.Textbox(
+                label="Export Status",
+                interactive=False,
+                lines=3,
+            )
+
+        with gr.Column():
+            with gr.Row():
                 sam_model_dropdown = gr.Dropdown(
                     choices=list(SAM_IMAGE_MODEL_CHOICES),
                     value=DEFAULT_SAM_IMAGE_MODEL,
@@ -1901,27 +1941,10 @@ with gr.Blocks() as demo:
                     interactive=False,
                 )
                 sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
-            output_video = gr.Video(
-                label="Output Video",
-                interactive=False,
-                autoplay=True,
-                loop=True,
-            )
-            
-            with gr.Row():
-                track_button = gr.Button("Track", interactive=False)
-
-        with gr.Column():
             sam_preview_image = gr.Image(
                 label="SAM point preview",
                 type="numpy",
                 interactive=False,
-            )
-            no_wound_export_button = gr.Button("Export No-Wound Frames to YOLO", interactive=False)
-            export_status = gr.Textbox(
-                label="Export Status",
-                interactive=False,
-                lines=3,
             )
 
     gr.Markdown("## Third step: Fine-tune point adjustment of cotracker and Preview effect of SAM on processed video.")

@@ -126,14 +126,41 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("sam_preview_image = gr.Image", second_step_block)
         self.assertIn('label="SAM point preview"', second_step_block)
 
-    def test_second_step_shows_output_video_before_sam_point_preview(self):
+    def test_second_step_places_track_output_export_then_sam_preview_controls(self):
         app_source = APP_PATH.read_text()
         second_step_block = app_source.split("## Third step:", maxsplit=1)[0]
 
         self.assertLess(
+            second_step_block.index("current_frame = gr.Image"),
+            second_step_block.index("track_button = gr.Button"),
+        )
+        self.assertLess(
+            second_step_block.index("track_button = gr.Button"),
             second_step_block.index("output_video = gr.Video"),
+        )
+        self.assertLess(
+            second_step_block.index("output_video = gr.Video"),
+            second_step_block.index("no_wound_export_button = gr.Button"),
+        )
+        self.assertLess(
+            second_step_block.index("no_wound_export_button = gr.Button"),
+            second_step_block.index("sam_model_dropdown = gr.Dropdown"),
+        )
+        self.assertLess(
+            second_step_block.index("sam_model_dropdown = gr.Dropdown"),
+            second_step_block.index("sam_preview_button = gr.Button"),
+        )
+        self.assertLess(
+            second_step_block.index("sam_preview_button = gr.Button"),
             second_step_block.index("sam_preview_image = gr.Image"),
         )
+
+    def test_cotracker_gradio_requirements_include_sam2_preview_dependencies(self):
+        requirements_path = APP_PATH.parent / "requirements.txt"
+        requirements = requirements_path.read_text()
+
+        self.assertIn("hydra-core>=1.3.2", requirements)
+        self.assertIn("iopath>=0.1.10", requirements)
 
     def test_sam_preview_preloads_default_model_in_background(self):
         app_source = APP_PATH.read_text()
