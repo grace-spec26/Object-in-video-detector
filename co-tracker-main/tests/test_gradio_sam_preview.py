@@ -19,9 +19,11 @@ with mock.patch.object(gr.Blocks, "launch", lambda self, *args, **kwargs: None):
 
 
 class FakeSamPredictor:
-    def __init__(self):
+    def __init__(self, masks=None, scores=None):
         self.image = None
         self.predict_calls = []
+        self.masks = masks
+        self.scores = scores
 
     def set_image(self, frame):
         self.image = np.asarray(frame).copy()
@@ -36,9 +38,13 @@ class FakeSamPredictor:
             }
         )
         height, width = self.image.shape[:2]
-        mask = np.zeros((1, height, width), dtype=bool)
-        mask[0, 10:30, 40:80] = True
-        return mask, np.asarray([0.9], dtype=np.float32), np.zeros((1, 256, 256), dtype=np.float32)
+        if self.masks is None:
+            mask = np.zeros((1, height, width), dtype=bool)
+            mask[0, 10:30, 40:80] = True
+        else:
+            mask = np.asarray(self.masks, dtype=bool)
+        scores = np.asarray(self.scores if self.scores is not None else [0.9], dtype=np.float32)
+        return mask, scores, np.zeros((len(mask), 256, 256), dtype=np.float32)
 
 
 class GradioSamPreviewTest(unittest.TestCase):
@@ -84,9 +90,43 @@ class GradioSamPreviewTest(unittest.TestCase):
             np.asarray([[50.0, 20.0], [140.0, 40.0]], dtype=np.float32),
         )
         np.testing.assert_array_equal(call["point_labels"], np.asarray([1, 0], dtype=np.int32))
+        self.assertTrue(call["multimask_output"])
         self.assertTrue(call["normalize_coords"])
         self.assertIn("point_coords=[[50.0, 20.0], [140.0, 40.0]]", status)
         self.assertIn("point_labels=[1, 0]", status)
+
+    def test_preview_prefers_mask_that_includes_positive_and_excludes_negative_points(self):
+        video_frames, video_preview, query_points = self._sample_video()
+        bad_mask = np.zeros((100, 200), dtype=bool)
+        bad_mask[35:48, 132:150] = True
+        good_mask = np.zeros((100, 200), dtype=bool)
+        good_mask[15:32, 44:68] = True
+        predictor = FakeSamPredictor(
+            masks=np.stack([bad_mask, good_mask], axis=0),
+            scores=np.asarray([0.99, 0.2], dtype=np.float32),
+        )
+        runtime = {
+            "predictor": predictor,
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+
+        with mock.patch.object(app, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
+            preview, _ = app.preview_sam_on_frame(
+                video_frames,
+                video_preview,
+                query_points,
+                None,
+                None,
+                None,
+                1,
+                "sam2.1_hiera_small.pt",
+            )
+
+        self.assertGreater(preview[25, 50, 1], 0)
+        self.assertEqual(preview[42, 140].tolist(), [255, 0, 0])
 
     def test_preview_draws_prompt_points_while_sam_model_is_loading(self):
         video_frames, video_preview, query_points = self._sample_video()

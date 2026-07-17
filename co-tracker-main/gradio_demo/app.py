@@ -1471,9 +1471,42 @@ def predict_sam_preview_mask(runtime, frame, point_coords, point_labels):
         return predictor.predict(
             point_coords=point_coords.astype(np.float32),
             point_labels=point_labels.astype(np.int32),
-            multimask_output=len(point_coords) == 1,
+            multimask_output=True,
             normalize_coords=True,
         )
+
+
+def sam_preview_mask_values_at_points(mask, points):
+    if len(points) == 0:
+        return np.empty((0,), dtype=bool)
+    mask_array = np.asarray(mask).astype(bool)
+    height, width = mask_array.shape[:2]
+    rounded = np.rint(np.asarray(points, dtype=np.float32)).astype(np.int32)
+    xs = np.clip(rounded[:, 0], 0, width - 1)
+    ys = np.clip(rounded[:, 1], 0, height - 1)
+    return mask_array[ys, xs].astype(bool)
+
+
+def select_sam_preview_mask(masks, scores, point_coords, point_labels):
+    masks_array = np.asarray(masks).astype(bool)
+    if len(masks_array) == 0:
+        raise ValueError("SAM returned no masks for preview.")
+
+    coords = np.asarray(point_coords, dtype=np.float32)
+    labels = np.asarray(point_labels, dtype=np.int32)
+    positives = coords[labels == 1]
+    negatives = coords[labels == 0]
+    scored_indices = []
+    for index, mask in enumerate(masks_array):
+        positive_hits = sam_preview_mask_values_at_points(mask, positives)
+        negative_hits = sam_preview_mask_values_at_points(mask, negatives)
+        positive_score = float(np.mean(positive_hits)) if len(positive_hits) else 0.0
+        negative_score = float(np.mean(~negative_hits)) if len(negative_hits) else 1.0
+        sam_score = float(scores[index]) if index < len(scores) else 0.0
+        area = float(np.count_nonzero(mask))
+        combined_score = 5.0 * positive_score + 4.0 * negative_score + sam_score
+        scored_indices.append((combined_score, sam_score, -area, index))
+    return int(max(scored_indices)[-1])
 
 
 def draw_sam_preview(frame, mask, point_coords, point_labels):
@@ -1642,7 +1675,7 @@ def preview_sam_on_frame(
         return prompt_preview, f"{loading_message} Loaded prompts: {prompt_summary}."
 
     masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
-    best_mask = masks[int(np.argmax(scores))]
+    best_mask = masks[select_sam_preview_mask(masks, scores, point_coords, point_labels)]
     preview = draw_sam_preview(frame, best_mask, point_coords, point_labels)
     positive_count = int(np.sum(point_labels == 1))
     negative_count = int(np.sum(point_labels == 0))
@@ -1755,10 +1788,10 @@ def preview_sam_video_for_processed_frames(
         masks, scores, _ = predictor.predict(
             point_coords=point_coords.astype(np.float32),
             point_labels=point_labels.astype(np.int32),
-            multimask_output=len(point_coords) == 1,
+            multimask_output=True,
             normalize_coords=True,
         )
-        best_mask = masks[int(np.argmax(scores))]
+        best_mask = masks[select_sam_preview_mask(masks, scores, point_coords, point_labels)]
         review_frames.append(draw_sam_preview(frame, best_mask, point_coords, point_labels))
         processed_count += 1
 
