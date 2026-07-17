@@ -1495,6 +1495,21 @@ def draw_sam_preview(frame, mask, point_coords, point_labels):
     return preview
 
 
+def format_sam_prompt_summary(point_coords, point_labels, max_points=12):
+    coords = np.asarray(point_coords, dtype=np.float32).reshape(-1, 2)
+    labels = np.asarray(point_labels, dtype=np.int32).reshape(-1)
+    display_count = min(len(coords), int(max_points))
+    display_coords = [
+        [round(float(x), 2), round(float(y), 2)]
+        for x, y in coords[:display_count]
+    ]
+    display_labels = [int(label) for label in labels[:display_count]]
+    suffix = ""
+    if len(coords) > display_count:
+        suffix = f", showing first {display_count} of {len(coords)}"
+    return f"point_coords={display_coords}, point_labels={display_labels}{suffix}"
+
+
 def sam_point_prompts_for_frame(
     video_frames,
     video_preview_array,
@@ -1619,9 +1634,12 @@ def preview_sam_on_frame(
         return as_uint8_rgb_frame(video_frames[frame_index]), message
 
     frame = as_uint8_rgb_frame(video_frames[frame_index])
+    prompt_summary = format_sam_prompt_summary(point_coords, point_labels)
     runtime, loading_message = get_sam_preview_runtime_if_ready(sam_model)
     if runtime is None:
-        return frame, loading_message
+        empty_mask = np.zeros(frame.shape[:2], dtype=bool)
+        prompt_preview = draw_sam_preview(frame, empty_mask, point_coords, point_labels)
+        return prompt_preview, f"{loading_message} Loaded prompts: {prompt_summary}."
 
     masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
     best_mask = masks[int(np.argmax(scores))]
@@ -1632,7 +1650,8 @@ def preview_sam_on_frame(
         preview,
         f"SAM preview frame {frame_index} from {prompt_source} points with "
         f"{runtime['model_label']} on {runtime['device']} "
-        f"({positive_count} positive, {negative_count} negative point(s)).",
+        f"({positive_count} positive, {negative_count} negative point(s)). "
+        f"Loaded prompts: {prompt_summary}.",
     )
 
 

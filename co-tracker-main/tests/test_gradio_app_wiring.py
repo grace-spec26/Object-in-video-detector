@@ -189,7 +189,9 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("def get_sam_preview_runtime_if_ready", app_source)
         self.assertIn("sam_preview_runtime_lock.acquire(blocking=False)", app_source)
         self.assertIn("runtime, loading_message = get_sam_preview_runtime_if_ready(sam_model)", preview_fn)
-        self.assertIn("return frame, loading_message", preview_fn)
+        self.assertIn("prompt_preview = draw_sam_preview", preview_fn)
+        self.assertIn("Loaded prompts: {prompt_summary}", preview_fn)
+        self.assertIn("return prompt_preview", preview_fn)
         self.assertNotIn("runtime = get_sam_preview_runtime(sam_model)", preview_fn)
 
     def test_lock_busy_sam_preview_prequeues_requested_model(self):
