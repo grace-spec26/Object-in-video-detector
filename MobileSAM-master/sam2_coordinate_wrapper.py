@@ -93,7 +93,11 @@ def checkpoint_file_looks_unavailable(checkpoint_path: Path) -> bool:
         return False
 
     allocated_blocks = getattr(stat_result, "st_blocks", None)
-    return stat_result.st_size > 0 and allocated_blocks == 0
+    if stat_result.st_size <= 0 or allocated_blocks is None:
+        return False
+
+    allocated_bytes = int(allocated_blocks) * 512
+    return allocated_bytes < stat_result.st_size * 0.5
 
 
 def checkpoint_file_looks_incomplete(checkpoint_path: Path, model_option: Dict[str, Any]) -> bool:
@@ -183,19 +187,73 @@ def python_downloader_should_use_curl_first() -> bool:
 
 
 def download_url_with_curl(url: str, destination: Path, curl_path: str) -> None:
+    existing_size = destination.stat().st_size if destination.exists() else 0
+    output_path = destination
+    range_tail_path = None
+
     command = [
         curl_path,
         "--fail",
         "--location",
+        "--http1.1",
         "--retry",
         "3",
         "--connect-timeout",
         "30",
     ]
-    if destination.exists() and destination.stat().st_size > 0:
-        command.extend(["--continue-at", "-"])
-    command.extend(["-o", str(destination), url])
-    subprocess.run(command, check=True)
+
+    if existing_size > 0:
+        range_tail_path = checkpoint_range_tail_path(destination)
+        if range_tail_path.exists():
+            range_tail_path.unlink()
+        output_path = range_tail_path
+        command.extend(["--range", f"{existing_size}-"])
+
+    command.extend(["-o", str(output_path), url])
+    try:
+        subprocess.run(command, check=True)
+    except Exception:
+        if range_tail_path is not None and range_tail_path.exists():
+            range_tail_path.unlink()
+        raise
+
+    if range_tail_path is not None:
+        with destination.open("ab") as destination_file:
+            with range_tail_path.open("rb") as range_tail_file:
+                shutil.copyfileobj(range_tail_file, destination_file)
+        range_tail_path.unlink()
+
+
+def checkpoint_range_tail_path(destination: Path) -> Path:
+    return destination.with_suffix(destination.suffix + ".range")
+
+
+def format_checkpoint_download_progress(checkpoint_path: Path, model_option: Dict[str, Any]) -> str:
+    expected_size = int(model_option.get("expected_size") or 0)
+    try:
+        downloaded_size = Path(checkpoint_path).stat().st_size
+    except FileNotFoundError:
+        downloaded_size = 0
+
+    if expected_size > 0:
+        percent = int(round((downloaded_size / expected_size) * 100))
+        return f"{downloaded_size}/{expected_size} bytes ({percent}%)"
+    return f"{downloaded_size} bytes"
+
+
+def raise_checkpoint_download_error(
+    model_option: Dict[str, Any],
+    temporary_path: Path,
+    cause: Exception,
+) -> None:
+    progress = format_checkpoint_download_progress(temporary_path, model_option)
+    if isinstance(cause, subprocess.CalledProcessError):
+        reason = f"curl exited with status {cause.returncode}"
+    else:
+        reason = str(cause)
+    raise RuntimeError(
+        f"Failed to download {model_option['checkpoint_name']}: {progress}; {reason}."
+    ) from cause
 
 
 def download_sam2_checkpoint(model_name: Optional[str] = None) -> Path:
@@ -204,6 +262,12 @@ def download_sam2_checkpoint(model_name: Optional[str] = None) -> Path:
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".download")
     curl_path = shutil.which("curl")
+
+    if temporary_path.exists() and checkpoint_file_looks_unavailable(temporary_path):
+        temporary_path.unlink()
+        range_tail_path = checkpoint_range_tail_path(temporary_path)
+        if range_tail_path.exists():
+            range_tail_path.unlink()
 
     if checkpoint_file_looks_incomplete(checkpoint_path, model_option):
         checkpoint_size = checkpoint_path.stat().st_size
@@ -214,7 +278,10 @@ def download_sam2_checkpoint(model_name: Optional[str] = None) -> Path:
             checkpoint_path.replace(temporary_path)
 
     if curl_path and python_downloader_should_use_curl_first():
-        download_url_with_curl(model_option["url"], temporary_path, curl_path)
+        try:
+            download_url_with_curl(model_option["url"], temporary_path, curl_path)
+        except subprocess.CalledProcessError as curl_error:
+            raise_checkpoint_download_error(model_option, temporary_path, curl_error)
     else:
         if temporary_path.exists():
             temporary_path.unlink()
@@ -231,12 +298,16 @@ def download_sam2_checkpoint(model_name: Optional[str] = None) -> Path:
 
             try:
                 download_url_with_curl(model_option["url"], temporary_path, curl_path)
+            except subprocess.CalledProcessError as curl_error:
+                if temporary_path.exists() and temporary_path.stat().st_size == 0:
+                    temporary_path.unlink()
+                raise_checkpoint_download_error(model_option, temporary_path, curl_error)
             except Exception as curl_error:
                 if temporary_path.exists() and temporary_path.stat().st_size == 0:
                     temporary_path.unlink()
                 raise RuntimeError(
                     f"Failed to download {model_option['checkpoint_name']} with Python urllib "
-                    "or curl fallback."
+                    f"or curl fallback: {curl_error}."
                 ) from curl_error
 
     if not temporary_path.exists() or temporary_path.stat().st_size == 0:
