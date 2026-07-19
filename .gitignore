@@ -48,3 +48,7 @@ tracked-data/
 .runtime_cache/
 sam2/
 video-frame-extractor-master/
+
+# Local media/input data
+YT_videos/
+Animal Wound - Sheet1.csv
