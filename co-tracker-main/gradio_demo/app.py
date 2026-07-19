@@ -396,15 +396,46 @@ def resolve_sam_preview_model_option(model_name):
     return resolve_sam2_model_option(model_name)
 
 
+def sam_checkpoint_file_looks_unavailable(checkpoint_path):
+    try:
+        stat_result = Path(checkpoint_path).stat()
+    except FileNotFoundError:
+        return False
+
+    allocated_blocks = getattr(stat_result, "st_blocks", None)
+    if stat_result.st_size <= 0 or allocated_blocks is None:
+        return False
+
+    allocated_bytes = int(allocated_blocks) * 512
+    return allocated_bytes < stat_result.st_size * 0.5
+
+
 def sam_model_checkpoint_download_progress(model_name):
     model_option = resolve_sam_preview_model_option(model_name)
     model_label = model_option.get("label", str(model_name))
     checkpoint_path = Path(model_option["checkpoint"])
     temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".download")
     expected_size = int(model_option.get("expected_size") or 0)
+    checkpoint_exists = checkpoint_path.exists()
+    checkpoint_unavailable = (
+        sam_checkpoint_file_looks_unavailable(checkpoint_path)
+        if checkpoint_exists
+        else False
+    )
 
-    if checkpoint_path.exists():
+    if temporary_path.exists() and (checkpoint_unavailable or not checkpoint_exists):
+        if sam_checkpoint_file_looks_unavailable(temporary_path):
+            return 0, f"{model_label} partial download is a local placeholder; restarting download"
+        downloaded_size = temporary_path.stat().st_size
+        if expected_size > 0:
+            percent = int(round((downloaded_size / expected_size) * 100))
+            return percent, f"Downloading {model_label}: {downloaded_size}/{expected_size} bytes"
+        return 0, f"Downloading {model_label}: {downloaded_size} bytes"
+
+    if checkpoint_exists:
         checkpoint_size = checkpoint_path.stat().st_size
+        if checkpoint_unavailable:
+            return 0, f"{model_label} checkpoint is a local placeholder; waiting to redownload"
         if expected_size > 0 and checkpoint_size < expected_size:
             percent = int(round((checkpoint_size / expected_size) * 100))
             return percent, f"{model_label} checkpoint is incomplete: {checkpoint_size}/{expected_size} bytes"
@@ -437,19 +468,19 @@ def current_sam_model_progress_html(sam_model):
         previous_error = sam_preview_preload_errors.get(model_name)
         is_loading = model_name in sam_preview_preload_started
 
-    if previous_error and not is_loading:
-        return format_sam_model_progress_html(
-            100,
-            f"SAM image model {model_name} failed to load: {previous_error}",
-            "#dc2626",
-        )
-
     try:
         percent, message = sam_model_checkpoint_download_progress(model_name)
     except Exception as exc:
         return format_sam_model_progress_html(
             0,
             f"SAM image model {model_name} progress unavailable: {exc}",
+            "#dc2626",
+        )
+
+    if previous_error and not is_loading:
+        return format_sam_model_progress_html(
+            percent,
+            f"SAM image model {model_name} failed to load: {previous_error}. {message}",
             "#dc2626",
         )
 
@@ -2009,7 +2040,6 @@ def preview_sam_video_for_processed_frames(
         frame = as_uint8_rgb_frame(video_frames[frame_index])
         if not should_process_frame_for_skip(frame_index, skip_count):
             skipped_by_frame_skip += 1
-            review_frames.append(frame)
             yield (
                 format_sam_video_progress_html(
                     frame_index + 1,
@@ -2036,7 +2066,6 @@ def preview_sam_video_for_processed_frames(
         )
         if len(point_coords) == 0:
             skipped_no_points += 1
-            review_frames.append(frame)
             yield (
                 format_sam_video_progress_html(
                     frame_index + 1,
@@ -2049,7 +2078,6 @@ def preview_sam_video_for_processed_frames(
             continue
         if not np.any(point_labels == 1):
             skipped_no_positive += 1
-            review_frames.append(frame)
             yield (
                 format_sam_video_progress_html(
                     frame_index + 1,
@@ -2081,6 +2109,23 @@ def preview_sam_video_for_processed_frames(
             f"SAM video review processed {processed_count} frame(s).",
         )
 
+    skipped_parts = []
+    if skipped_by_frame_skip:
+        skipped_parts.append(f"{skipped_by_frame_skip} by skip setting")
+    if skipped_no_points:
+        skipped_parts.append(f"{skipped_no_points} without points")
+    if skipped_no_positive:
+        skipped_parts.append(f"{skipped_no_positive} without positive points")
+    skipped_text = f"; skipped {', '.join(skipped_parts)}" if skipped_parts else ""
+
+    if not review_frames:
+        yield (
+            format_sam_video_progress_html(frame_count, frame_count, "SAM video review complete"),
+            None,
+            f"No SAM-processed frames were available for video review{skipped_text}.",
+        )
+        return
+
     video_file_name = uuid.uuid4().hex + ".mp4"
     video_path = os.path.join(os.path.dirname(__file__), "tmp")
     video_file_path = os.path.join(video_path, video_file_name)
@@ -2090,14 +2135,6 @@ def preview_sam_video_for_processed_frames(
         output_fps = 24
     mediapy.write_video(video_file_path, np.asarray(review_frames), fps=output_fps)
 
-    skipped_parts = []
-    if skipped_by_frame_skip:
-        skipped_parts.append(f"{skipped_by_frame_skip} by skip setting")
-    if skipped_no_points:
-        skipped_parts.append(f"{skipped_no_points} without points")
-    if skipped_no_positive:
-        skipped_parts.append(f"{skipped_no_positive} without positive points")
-    skipped_text = f"; skipped {', '.join(skipped_parts)}" if skipped_parts else ""
     yield (
         format_sam_video_progress_html(frame_count, frame_count, "SAM video review complete"),
         video_file_path,

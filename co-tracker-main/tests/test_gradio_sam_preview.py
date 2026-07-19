@@ -2,20 +2,94 @@ import os
 import sys
 import tempfile
 import threading
+import types
 import unittest
 from pathlib import Path
 from unittest import mock
 
 import numpy as np
+import cv2 as cv2_module
 
 
 os.environ.setdefault("COTRACKER_DISABLE_EXAMPLES", "1")
+os.environ.setdefault("GRADIO_SKIP_PYI_GENERATION", "1")
+os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
+os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "gradio_demo"))
 
-import gradio as gr  # noqa: E402
+class DummyGradioComponent:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def click(self, *args, **kwargs):
+        return self
+
+    def change(self, *args, **kwargs):
+        return self
+
+    def select(self, *args, **kwargs):
+        return self
+
+    def launch(self, *args, **kwargs):
+        return None
 
 
-with mock.patch.object(gr.Blocks, "launch", lambda self, *args, **kwargs: None):
+gradio_stub = types.ModuleType("gradio")
+for component_name in (
+    "Accordion",
+    "Blocks",
+    "Button",
+    "Column",
+    "Dropdown",
+    "File",
+    "HTML",
+    "Image",
+    "Markdown",
+    "Number",
+    "Radio",
+    "Row",
+    "Slider",
+    "State",
+    "Textbox",
+    "Video",
+):
+    setattr(gradio_stub, component_name, DummyGradioComponent)
+gradio_stub.Error = RuntimeError
+gradio_stub.Examples = lambda *args, **kwargs: DummyGradioComponent(*args, **kwargs)
+gradio_stub.SelectData = type("SelectData", (), {})
+gradio_stub.Warning = lambda *args, **kwargs: None
+gradio_stub.update = lambda **kwargs: kwargs
+gradio_stub.data_classes = types.SimpleNamespace(
+    PredictBody=types.SimpleNamespace(model_fields={})
+)
+gradio_stub.networking = types.SimpleNamespace(url_ok=lambda _: True)
+mediapy_stub = types.ModuleType("mediapy")
+mediapy_stub.read_video = lambda *args, **kwargs: None
+mediapy_stub.resize_video = lambda frames, size: frames
+mediapy_stub.write_video = lambda *args, **kwargs: None
+matplotlib_stub = types.ModuleType("matplotlib")
+matplotlib_stub.colormaps = types.SimpleNamespace(
+    get_cmap=lambda name: (lambda value: (1.0, 0.0, 0.0, 1.0))
+)
+
+
+with mock.patch.dict(
+    sys.modules,
+    {
+        "gradio": gradio_stub,
+        "gradio.data_classes": gradio_stub.data_classes,
+        "gradio.networking": gradio_stub.networking,
+        "mediapy": mediapy_stub,
+        "matplotlib": matplotlib_stub,
+    },
+):
     import app  # noqa: E402
 
 
@@ -172,6 +246,90 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("Downloading SAM2.1 Hiera Small", message)
         self.assertIn("25/100 bytes", message)
 
+    def test_sam_model_progress_prefers_partial_download_over_sparse_placeholder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "sam2.1_hiera_large.pt"
+            checkpoint.write_bytes(b"")
+            with checkpoint.open("r+b") as handle:
+                handle.truncate(100)
+            temporary_checkpoint = checkpoint.with_suffix(checkpoint.suffix + ".download")
+            temporary_checkpoint.write_bytes(b"x" * 25)
+            model_option = {
+                "label": "SAM2.1 Hiera Large",
+                "checkpoint": checkpoint,
+                "expected_size": 100,
+            }
+
+            with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+                percent, message = app.sam_model_checkpoint_download_progress(
+                    "sam2.1_hiera_large.pt"
+                )
+
+        self.assertEqual(percent, 25)
+        self.assertIn("Downloading SAM2.1 Hiera Large", message)
+        self.assertIn("25/100 bytes", message)
+
+    def test_sam_model_progress_does_not_trust_sparse_partial_download(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "sam2.1_hiera_large.pt"
+            temporary_checkpoint = checkpoint.with_suffix(checkpoint.suffix + ".download")
+            temporary_checkpoint.write_bytes(b"x" * 25)
+            model_option = {
+                "label": "SAM2.1 Hiera Large",
+                "checkpoint": checkpoint,
+                "expected_size": 100,
+            }
+
+            def fake_unavailable(path):
+                return Path(path).name.endswith(".download")
+
+            with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+                with mock.patch.object(
+                    app,
+                    "sam_checkpoint_file_looks_unavailable",
+                    side_effect=fake_unavailable,
+                ):
+                    percent, message = app.sam_model_checkpoint_download_progress(
+                        "sam2.1_hiera_large.pt"
+                    )
+
+        self.assertEqual(percent, 0)
+        self.assertIn("partial download is a local placeholder", message)
+
+    def test_failed_sam_model_progress_keeps_actual_download_percentage(self):
+        model_name = "sam2.1_hiera_large.pt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / model_name
+            checkpoint.write_bytes(b"")
+            with checkpoint.open("r+b") as handle:
+                handle.truncate(100)
+            temporary_checkpoint = checkpoint.with_suffix(checkpoint.suffix + ".download")
+            temporary_checkpoint.write_bytes(b"x" * 25)
+            model_option = {
+                "label": "SAM2.1 Hiera Large",
+                "checkpoint": checkpoint,
+                "expected_size": 100,
+            }
+            with app.sam_preview_preload_lock:
+                original_errors = dict(app.sam_preview_preload_errors)
+                original_started = set(app.sam_preview_preload_started)
+                app.sam_preview_preload_errors[model_name] = "curl exited with status 56"
+                app.sam_preview_preload_started.discard(model_name)
+            try:
+                with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+                    progress_html = app.current_sam_model_progress_html(model_name)
+            finally:
+                with app.sam_preview_preload_lock:
+                    app.sam_preview_preload_errors.clear()
+                    app.sam_preview_preload_errors.update(original_errors)
+                    app.sam_preview_preload_started.clear()
+                    app.sam_preview_preload_started.update(original_started)
+
+        self.assertIn("25%", progress_html)
+        self.assertIn("failed to load", progress_html)
+        self.assertIn("curl exited with status 56", progress_html)
+        self.assertNotIn(">100%</span>", progress_html)
+
     def test_sam_model_progress_marks_loaded_runtime_complete(self):
         model_name = "sam2.1_hiera_small.pt"
         with app.sam_preview_runtime_lock:
@@ -291,10 +449,50 @@ class GradioSamPreviewTest(unittest.TestCase):
         final_progress_html, video_path, status = results[-1]
         self.assertIn("100%", final_progress_html)
         self.assertEqual(video_path, written["path"])
-        self.assertEqual(written["frames"].shape[0], 4)
+        self.assertEqual(written["frames"].shape[0], 2)
         self.assertEqual(len(runtime["predictor"].predict_calls), 2)
         self.assertIn("2/4 frame(s)", status)
         self.assertIn("skipped 2 by skip setting", status)
+
+    def test_processed_video_review_does_not_write_empty_preview_when_no_frames_run_sam(self):
+        video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((2, 10, 20, 3), dtype=np.uint8)
+        runtime = {
+            "predictor": FakeSamPredictor(),
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+        write_video = mock.Mock()
+
+        with mock.patch.object(app, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
+            app.mediapy,
+            "write_video",
+            side_effect=write_video,
+        ):
+            results = list(
+                app.preview_sam_video_for_processed_frames(
+                    video_frames,
+                    video_preview,
+                    [[], []],
+                    np.empty((0, 2, 2), dtype=np.float32),
+                    np.empty((0, 2), dtype=bool),
+                    [],
+                    video_preview.copy(),
+                    24,
+                    "sam2.1_hiera_small.pt",
+                    0,
+                    [[], []],
+                    [],
+                )
+            )
+
+        final_progress_html, video_path, status = results[-1]
+        self.assertIn("100%", final_progress_html)
+        self.assertIsNone(video_path)
+        self.assertIn("No SAM-processed frames", status)
+        write_video.assert_not_called()
 
 
 if __name__ == "__main__":
