@@ -11,11 +11,15 @@ PNG masks remain intermediate data only; final training labels are .txt files.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import math
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+import numpy as np
 from PIL import Image
 
 
@@ -23,6 +27,8 @@ Point = Tuple[float, float]
 Pixel = Tuple[int, int]
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff"}
+_DATASET_THREAD_LOCKS: Dict[str, threading.Lock] = {}
+_DATASET_THREAD_LOCKS_GUARD = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -102,27 +108,27 @@ def export_yolo_segmentation_dataset(
     train_records = records[:train_count]
     val_records = records[train_count:]
 
-    _prepare_dataset_dir(dataset_root, overwrite=overwrite)
-    train_start_index = _next_split_image_index(dataset_root, "train")
-    val_start_index = _next_split_image_index(dataset_root, "val")
+    with _dataset_export_lock(dataset_root):
+        _prepare_dataset_dir(dataset_root, overwrite=overwrite)
+        train_start_index = _next_split_image_index(dataset_root, "train")
+        val_start_index = _next_split_image_index(dataset_root, "val")
 
-    _write_records(
-        dataset_root,
-        "train",
-        train_records,
-        image_quality=image_quality,
-        start_index=train_start_index,
-    )
-    _write_records(
-        dataset_root,
-        "val",
-        val_records,
-        image_quality=image_quality,
-        start_index=val_start_index,
-    )
-    _write_dataset_yaml(dataset_root)
-
-    validate_yolo_segmentation_dataset(dataset_root)
+        _write_records(
+            dataset_root,
+            "train",
+            train_records,
+            image_quality=image_quality,
+            start_index=train_start_index,
+        )
+        _write_records(
+            dataset_root,
+            "val",
+            val_records,
+            image_quality=image_quality,
+            start_index=val_start_index,
+        )
+        _write_dataset_yaml(dataset_root)
+        validate_yolo_segmentation_dataset(dataset_root)
 
     stats = ExportStats(
         exported_images=len(records),
@@ -131,6 +137,75 @@ def export_yolo_segmentation_dataset(
         total_wound_instances=sum(len(record.polygons) for record in records),
         train_images=len(train_records),
         val_images=len(val_records),
+    )
+    _print_stats(stats)
+    return stats
+
+
+def export_no_wound_frames_to_yolo_dataset(
+    frames: Sequence[object],
+    output_dir: Path | str = "dataset",
+    train_ratio: float = 0.8,
+    image_quality: int = 95,
+) -> ExportStats:
+    """Append clean frames as YOLO negative samples with empty label files."""
+
+    frame_list = list(frames)
+    if len(frame_list) < 2:
+        raise ValueError(
+            "At least two frames are required so train and val folders are non-empty."
+        )
+    if not 0.0 < train_ratio < 1.0:
+        raise ValueError("train_ratio must be between 0 and 1.")
+    if not 1 <= image_quality <= 100:
+        raise ValueError("image_quality must be between 1 and 100.")
+
+    frame_arrays = [_as_export_frame_array(frame) for frame in frame_list]
+    dataset_root = Path(output_dir)
+    train_count = _split_count(len(frame_arrays), train_ratio)
+    train_frames = frame_arrays[:train_count]
+    val_frames = frame_arrays[train_count:]
+
+    with _dataset_export_lock(dataset_root):
+        _prepare_dataset_dir(dataset_root, overwrite=False)
+        dataset_yaml = dataset_root / "dataset.yaml"
+        previous_yaml = dataset_yaml.read_bytes() if dataset_yaml.exists() else None
+        created_paths: List[Path] = []
+        try:
+            _write_empty_frame_records(
+                dataset_root,
+                "train",
+                train_frames,
+                image_quality=image_quality,
+                start_index=_next_split_image_index(dataset_root, "train"),
+                created_paths=created_paths,
+            )
+            _write_empty_frame_records(
+                dataset_root,
+                "val",
+                val_frames,
+                image_quality=image_quality,
+                start_index=_next_split_image_index(dataset_root, "val"),
+                created_paths=created_paths,
+            )
+            _write_dataset_yaml(dataset_root)
+            validate_yolo_segmentation_dataset(dataset_root)
+        except Exception:
+            for created_path in reversed(created_paths):
+                created_path.unlink(missing_ok=True)
+            if previous_yaml is None:
+                dataset_yaml.unlink(missing_ok=True)
+            else:
+                dataset_yaml.write_bytes(previous_yaml)
+            raise
+
+    stats = ExportStats(
+        exported_images=len(frame_list),
+        labels=len(frame_list),
+        skipped_masks=0,
+        total_wound_instances=0,
+        train_images=len(train_frames),
+        val_images=len(val_frames),
     )
     _print_stats(stats)
     return stats
@@ -163,9 +238,6 @@ def validate_yolo_segmentation_dataset(dataset_dir: Path | str) -> None:
         for label_path in label_paths:
             rows = [row.strip() for row in label_path.read_text(encoding="utf-8").splitlines()]
             rows = [row for row in rows if row]
-            if not rows:
-                raise ValueError(f"Label file has no wound polygons: {label_path}")
-
             for row in rows:
                 values = row.split()
                 if values[0] != "0":
@@ -483,6 +555,82 @@ def _write_records(
             rows.append(f"0 {coords}")
         label_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
         next_index += 1
+
+
+def _write_empty_frame_records(
+    dataset_root: Path,
+    split: str,
+    frames: Sequence[object],
+    image_quality: int,
+    start_index: int,
+    created_paths: List[Path],
+) -> None:
+    images_dir = _split_images_dir(dataset_root, split)
+    labels_dir = _split_labels_dir(dataset_root, split)
+
+    next_index = start_index
+    for frame in frames:
+        output_name = f"{split}_img{next_index:05d}"
+        image_path = images_dir / f"{output_name}.jpg"
+        label_path = labels_dir / f"{output_name}.txt"
+        while image_path.exists() or label_path.exists():
+            next_index += 1
+            output_name = f"{split}_img{next_index:05d}"
+            image_path = images_dir / f"{output_name}.jpg"
+            label_path = labels_dir / f"{output_name}.txt"
+
+        try:
+            Image.fromarray(frame).convert("RGB").save(
+                image_path,
+                format="JPEG",
+                quality=image_quality,
+            )
+            label_path.write_bytes(b"")
+        except Exception:
+            image_path.unlink(missing_ok=True)
+            label_path.unlink(missing_ok=True)
+            raise
+
+        created_paths.extend((image_path, label_path))
+        next_index += 1
+
+
+def _as_export_frame_array(frame: object) -> np.ndarray:
+    frame_array = np.asarray(frame)
+    if frame_array.ndim == 3 and frame_array.shape[-1] == 1:
+        frame_array = frame_array[..., 0]
+    if frame_array.ndim == 2:
+        pass
+    elif frame_array.ndim == 3 and frame_array.shape[-1] in (3, 4):
+        pass
+    else:
+        raise ValueError(
+            f"Expected a grayscale, RGB, or RGBA frame; got shape {frame_array.shape}."
+        )
+    if frame_array.dtype != np.uint8:
+        frame_array = np.clip(frame_array, 0, 255).astype(np.uint8)
+    return frame_array
+
+
+def _dataset_thread_lock(dataset_root: Path) -> threading.Lock:
+    lock_key = str(dataset_root.expanduser().resolve())
+    with _DATASET_THREAD_LOCKS_GUARD:
+        return _DATASET_THREAD_LOCKS.setdefault(lock_key, threading.Lock())
+
+
+@contextmanager
+def _dataset_export_lock(dataset_root: Path):
+    dataset_root = dataset_root.expanduser().resolve()
+    dataset_root.mkdir(parents=True, exist_ok=True)
+    lock_path = dataset_root / ".yolo-export.lock"
+
+    with _dataset_thread_lock(dataset_root):
+        with lock_path.open("a+b") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _write_dataset_yaml(dataset_root: Path) -> None:

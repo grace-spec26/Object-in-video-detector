@@ -8,33 +8,60 @@ os.environ["GRADIO_SKIP_PYI_GENERATION"] = "1"
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
+import hashlib
+import html
+import importlib.metadata as importlib_metadata
+from contextlib import contextmanager
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
-import gradio as gr
-from gradio import data_classes as gradio_data_classes
-from gradio import networking as gradio_networking
+
+@contextmanager
+def suppress_importlib_entry_points():
+    original_entry_points = importlib_metadata.entry_points
+    importlib_metadata.entry_points = lambda *args, **kwargs: {}
+    try:
+        yield
+    finally:
+        importlib_metadata.entry_points = original_entry_points
+
+
+with suppress_importlib_entry_points():
+    import gradio as gr
+    from gradio import data_classes as gradio_data_classes
+    from gradio import networking as gradio_networking
+
 import mediapy
 import numpy as np
 import cv2
 import matplotlib
-import torch
 import colorsys
 import random
 from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
+_torch_module = None
+
+
+def get_torch():
+    global _torch_module
+    if _torch_module is not None:
+        return _torch_module
+
+    with suppress_importlib_entry_points():
+        import torch as torch_module
+
+    _torch_module = torch_module
+    return _torch_module
+
 try:
     from .export_helpers import (
-        DEFAULT_COORDINATES_DIR,
-        DEFAULT_FRAMES_DIR,
         labeled_query_points_for_frame,
         scale_tracks_to_frame_space,
-        store_coordinate_arrays,
-        store_original_frames,
         visible_labeled_points_for_frame,
     )
     from .refinement_helpers import (
@@ -50,6 +77,7 @@ try:
         pending_refinement_points,
         pop_refinement_point,
         remove_prompt_by_source,
+        remove_nearest_frame_point,
         remove_nearest_refinement_point,
     )
     from .tracking_helpers import (
@@ -71,12 +99,8 @@ try:
     )
 except ImportError:
     from export_helpers import (
-        DEFAULT_COORDINATES_DIR,
-        DEFAULT_FRAMES_DIR,
         labeled_query_points_for_frame,
         scale_tracks_to_frame_space,
-        store_coordinate_arrays,
-        store_original_frames,
         visible_labeled_points_for_frame,
     )
     from refinement_helpers import (
@@ -92,6 +116,7 @@ except ImportError:
         pending_refinement_points,
         pop_refinement_point,
         remove_prompt_by_source,
+        remove_nearest_frame_point,
         remove_nearest_refinement_point,
     )
     from tracking_helpers import (
@@ -149,7 +174,7 @@ def get_points_on_a_grid(
     size: int,
     extent: Tuple[float, ...],
     center: Optional[Tuple[float, ...]] = None,
-    device: Optional[torch.device] = torch.device("cpu"),
+    device: Optional[object] = None,
 ):
     r"""Get a grid of points covering a rectangular region
 
@@ -187,6 +212,10 @@ def get_points_on_a_grid(
     Returns:
         Tensor: grid.
     """
+    torch = get_torch()
+    if device is None:
+        device = torch.device("cpu")
+
     if size == 1:
         return torch.tensor([extent[1] / 2, extent[0] / 2], device=device)[None, None]
 
@@ -297,6 +326,29 @@ POINT_COLORS = {
     1: (0, 255, 0),
     0: (255, 0, 0),
 }
+SAM_VIDEO_PROGRESS_READY = """
+<div style="width: 100%; padding: 6px 0;">
+  <div style="display: flex; justify-content: space-between; font-size: 13px; color: #667085; margin-bottom: 4px;">
+    <span>SAM video review ready</span><span>0%</span>
+  </div>
+  <div style="height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden;">
+    <div style="height: 100%; width: 0%; background: #2563eb;"></div>
+  </div>
+</div>
+"""
+SAM_MODEL_PROGRESS_READY = """
+<div style="width: 100%; padding: 6px 0;">
+  <div style="display: flex; justify-content: space-between; font-size: 13px; color: #667085; margin-bottom: 4px;">
+    <span>SAM image model not loaded</span><span>0%</span>
+  </div>
+  <div style="height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden;">
+    <div style="height: 100%; width: 0%; background: #2563eb;"></div>
+  </div>
+</div>
+"""
+POINT_ADD_MODE = "Add"
+POINT_DELETE_NEAREST_MODE = "Delete nearest"
+POINT_EDIT_MODE_CHOICES = (POINT_ADD_MODE, POINT_DELETE_NEAREST_MODE)
 REFINEMENT_ADD_MODE = "Add"
 REFINEMENT_DELETE_MODE = "Delete nearest"
 REFINEMENT_EDIT_MODE_CHOICES = (REFINEMENT_ADD_MODE, REFINEMENT_DELETE_MODE)
@@ -314,6 +366,156 @@ DEFAULT_RAW_MASK_ROOT = PROJECT_ROOT / "raw-mask-data"
 DEFAULT_YOLO_DATASET_DIR = PROJECT_ROOT / "dataset"
 sam_preview_runtime_lock = threading.Lock()
 sam_preview_runtimes = {}
+sam_preview_preload_lock = threading.Lock()
+sam_preview_preload_started = set()
+sam_preview_preload_errors = {}
+
+
+def format_sam_model_progress_html(percent, message, color="#2563eb"):
+    bounded_percent = int(np.clip(int(round(float(percent))), 0, 100))
+    safe_message = html.escape(str(message))
+    safe_color = html.escape(str(color))
+    return f"""
+<div style="width: 100%; padding: 6px 0;">
+  <div style="display: flex; justify-content: space-between; font-size: 13px; color: #344054; margin-bottom: 4px;">
+    <span>{safe_message}</span><span>{bounded_percent}%</span>
+  </div>
+  <div style="height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden;">
+    <div style="height: 100%; width: {bounded_percent}%; background: {safe_color};"></div>
+  </div>
+</div>
+"""
+
+
+def resolve_sam_preview_model_option(model_name):
+    if str(MOBILE_SAM_ROOT) not in sys.path:
+        sys.path.insert(0, str(MOBILE_SAM_ROOT))
+
+    from sam2_coordinate_wrapper import resolve_sam2_model_option
+
+    return resolve_sam2_model_option(model_name)
+
+
+def sam_checkpoint_file_looks_unavailable(checkpoint_path):
+    try:
+        stat_result = Path(checkpoint_path).stat()
+    except FileNotFoundError:
+        return False
+
+    allocated_blocks = getattr(stat_result, "st_blocks", None)
+    if stat_result.st_size <= 0 or allocated_blocks is None:
+        return False
+
+    allocated_bytes = int(allocated_blocks) * 512
+    return allocated_bytes < stat_result.st_size * 0.5
+
+
+def sam_model_checkpoint_download_progress(model_name):
+    model_option = resolve_sam_preview_model_option(model_name)
+    model_label = model_option.get("label", str(model_name))
+    checkpoint_path = Path(model_option["checkpoint"])
+    temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".download")
+    expected_size = int(model_option.get("expected_size") or 0)
+    checkpoint_exists = checkpoint_path.exists()
+    checkpoint_unavailable = (
+        sam_checkpoint_file_looks_unavailable(checkpoint_path)
+        if checkpoint_exists
+        else False
+    )
+
+    if temporary_path.exists() and (checkpoint_unavailable or not checkpoint_exists):
+        if sam_checkpoint_file_looks_unavailable(temporary_path):
+            return 0, f"{model_label} partial download is a local placeholder; restarting download"
+        downloaded_size = temporary_path.stat().st_size
+        if expected_size > 0:
+            percent = int(round((downloaded_size / expected_size) * 100))
+            return percent, f"Downloading {model_label}: {downloaded_size}/{expected_size} bytes"
+        return 0, f"Downloading {model_label}: {downloaded_size} bytes"
+
+    if checkpoint_exists:
+        checkpoint_size = checkpoint_path.stat().st_size
+        if checkpoint_unavailable:
+            return 0, f"{model_label} checkpoint is a local placeholder; waiting to redownload"
+        if expected_size > 0 and checkpoint_size < expected_size:
+            percent = int(round((checkpoint_size / expected_size) * 100))
+            return percent, f"{model_label} checkpoint is incomplete: {checkpoint_size}/{expected_size} bytes"
+        return 100, f"{model_label} checkpoint downloaded"
+
+    if temporary_path.exists():
+        downloaded_size = temporary_path.stat().st_size
+        if expected_size > 0:
+            percent = int(round((downloaded_size / expected_size) * 100))
+            return percent, f"Downloading {model_label}: {downloaded_size}/{expected_size} bytes"
+        return 0, f"Downloading {model_label}: {downloaded_size} bytes"
+
+    return 0, f"{model_label} checkpoint waiting to download"
+
+
+def current_sam_model_progress_html(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    if model_name not in SAM_IMAGE_MODEL_CHOICES:
+        return format_sam_model_progress_html(0, f"Unknown SAM image model: {model_name}", "#dc2626")
+
+    with sam_preview_runtime_lock:
+        runtime = sam_preview_runtimes.get(model_name)
+        if runtime is not None:
+            return format_sam_model_progress_html(
+                100,
+                f"{runtime['model_label']} loaded on {runtime['device']}",
+            )
+
+    with sam_preview_preload_lock:
+        previous_error = sam_preview_preload_errors.get(model_name)
+        is_loading = model_name in sam_preview_preload_started
+
+    try:
+        percent, message = sam_model_checkpoint_download_progress(model_name)
+    except Exception as exc:
+        return format_sam_model_progress_html(
+            0,
+            f"SAM image model {model_name} progress unavailable: {exc}",
+            "#dc2626",
+        )
+
+    if previous_error and not is_loading:
+        return format_sam_model_progress_html(
+            percent,
+            f"SAM image model {model_name} failed to load: {previous_error}. {message}",
+            "#dc2626",
+        )
+
+    if is_loading and percent >= 100:
+        try:
+            model_label = resolve_sam_preview_model_option(model_name).get("label", model_name)
+        except Exception:
+            model_label = model_name
+        message = f"{model_label} checkpoint ready; loading model runtime"
+    elif is_loading and percent == 0:
+        try:
+            model_label = resolve_sam_preview_model_option(model_name).get("label", model_name)
+        except Exception:
+            model_label = model_name
+        message = f"Preparing {model_label} download or model load"
+
+    return format_sam_model_progress_html(percent, message)
+
+
+def stream_sam_model_loading_progress(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    start_sam_preview_preload(model_name)
+
+    while True:
+        yield current_sam_model_progress_html(model_name)
+
+        with sam_preview_runtime_lock:
+            is_loaded = model_name in sam_preview_runtimes
+        with sam_preview_preload_lock:
+            has_error = model_name in sam_preview_preload_errors
+            is_loading = model_name in sam_preview_preload_started
+
+        if is_loaded or (has_error and not is_loading):
+            return
+        time.sleep(1)
 
 
 def point_label_from_choice(point_type):
@@ -343,29 +545,78 @@ def draw_query_point(frame, x, y, point_label):
     return frame
 
 
-def get_point(frame_num, point_type, video_queried_preview, query_points, query_points_color, query_count, evt: gr.SelectData):
+def redraw_query_frame(frame, frame_points):
+    frame_draw = np.asarray(frame).copy()
+    for point in frame_points or []:
+        x, y, _, point_label = unpack_query_point(point)
+        frame_draw = draw_query_point(frame_draw, x, y, point_label)
+    return frame_draw
+
+
+def get_point(
+    frame_num,
+    point_type,
+    point_edit_mode,
+    video_preview,
+    video_queried_preview,
+    query_points,
+    query_points_color,
+    query_count,
+    evt: gr.SelectData,
+):
     print(f"You selected {(evt.index[0], evt.index[1], frame_num)}")
 
-    current_frame = video_queried_preview[int(frame_num)]
+    frame_index = int(frame_num)
+    x, y = evt.index
+
+    if str(point_edit_mode) == POINT_DELETE_NEAREST_MODE:
+        max_distance = max(18.0, POINT_PROMPT_RADIUS * 6.0)
+        updated_points, updated_colors, removed = remove_nearest_frame_point(
+            query_points,
+            query_points_color,
+            frame_index=frame_index,
+            x=x,
+            y=y,
+            max_distance=max_distance,
+        )
+        if removed:
+            query_points = updated_points
+            query_points_color = updated_colors
+            query_count = max(0, int(query_count) - 1)
+            current_frame_draw = redraw_query_frame(video_preview[frame_index], query_points[frame_index])
+            video_queried_preview[frame_index] = current_frame_draw
+        else:
+            current_frame_draw = video_queried_preview[frame_index]
+
+        has_points = count_frame_points(query_points) > 0
+        return (
+            current_frame_draw,
+            video_queried_preview,
+            query_points,
+            query_points_color,
+            query_count,
+            gr.update(interactive=has_points),
+            gr.update(interactive=has_points),
+        )
 
     # Get the mouse click
     point_label = point_label_from_choice(point_type)
-    query_points[int(frame_num)].append((evt.index[0], evt.index[1], frame_num, point_label))
+    query_points[frame_index].append((x, y, frame_index, point_label))
 
     # Choose the color for the point from matplotlib colormap
     color = POINT_COLORS[point_label]
     # print(f"Color: {color}")
-    query_points_color[int(frame_num)].append(color)
+    query_points_color[frame_index].append(color)
 
     # Draw the point on the frame
-    x, y = evt.index
+    current_frame = video_queried_preview[frame_index]
     current_frame_draw = draw_query_point(current_frame, x, y, point_label)
 
     # Update the frame
-    video_queried_preview[int(frame_num)] = current_frame_draw
+    video_queried_preview[frame_index] = current_frame_draw
 
     # Update the query count
-    query_count += 1
+    query_count = int(query_count) + 1
     return (
         current_frame_draw, # Updated frame for preview
         video_queried_preview, # Updated preview video
@@ -393,9 +644,7 @@ def undo_point(frame_num, video_preview, video_queried_preview, query_points, qu
 
     # Redraw the frame
     current_frame_draw = video_preview[int(frame_num)].copy()
-    for point, color in zip(query_points[int(frame_num)], query_points_color[int(frame_num)]):
-        x, y, _, point_label = unpack_query_point(point)
-        current_frame_draw = draw_query_point(current_frame_draw, x, y, point_label)
+    current_frame_draw = redraw_query_frame(video_preview[int(frame_num)], query_points[int(frame_num)])
 
     # Update the query count
     query_count -= 1
@@ -891,6 +1140,8 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
 
+    start_sam_preview_preload(DEFAULT_SAM_IMAGE_MODEL)
+
     video_arr = mediapy.read_video(video_path)
     source_video_fps = float(video_arr.metadata.fps)
     video_fps = source_video_fps
@@ -976,16 +1227,18 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         None,
         None,
         [],
+        gr.update(interactive=True),
         gr.update(interactive=False),
-        gr.update(interactive=False),
-        gr.update(interactive=False),
+        current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=False),
         None,
         gr.update(interactive=False),
+        current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=False),
         None,
         gr.update(value=0, interactive=False),
         gr.update(interactive=False),
+        gr.update(value=SAM_VIDEO_PROGRESS_READY),
         None,
         None,
         gr.update(minimum=0, maximum=0, value=0, interactive=False),
@@ -1009,6 +1262,7 @@ def track(
     if not has_selected_points:
         tracking_mode='grid'
     
+    torch = get_torch()
     device = resolve_torch_device(torch)
     dtype = torch.float if device == "cuda" else torch.float
     total_frame_count = video_input.shape[0]
@@ -1104,9 +1358,9 @@ def track(
     mediapy.write_video(video_file_path, painted_video, fps=video_fps)
 
     export_status = (
-        "Tracking complete. Frames can now be stored."
+        "Grid tracking complete."
         if not has_selected_points
-        else "Tracking complete. Frames and selected-point coordinates can now be stored."
+        else "Selected-point tracking complete."
     )
     return (
         video_file_path,
@@ -1118,10 +1372,11 @@ def track(
         painted_video[0],
         gr.update(interactive=True),
         gr.update(interactive=has_selected_points),
-        gr.update(interactive=has_selected_points),
+        current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=has_selected_points),
         gr.update(value=0, interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
+        gr.update(value=SAM_VIDEO_PROGRESS_READY),
         None,
         export_status,
     )
@@ -1163,6 +1418,7 @@ def reprocess_with_refinements(
     query_points_color,
     refinement_query_points,
     tracked_frame_num,
+    processed_sam_model=DEFAULT_SAM_IMAGE_MODEL,
 ):
     if video_preview is None or video_input is None:
         message = "Track a video before re-processing refinement points."
@@ -1235,6 +1491,7 @@ def reprocess_with_refinements(
         refinement_query_points,
         tracked_prompt_sources,
     )
+    result[9] = current_sam_model_progress_html(processed_sam_model)
     result[11] = gr.update(interactive=True)
     result[-1] = (
         f"Re-processing complete with {merged_query_count} point prompt(s). "
@@ -1247,50 +1504,31 @@ def reprocess_with_refinements(
     )
 
 
-def store_frames_from_state(video_frames):
+def export_no_wound_frames_from_state(video_frames):
     if video_frames is None:
-        message = "Submit and track a video before storing frames."
+        message = "Submit a video before exporting no-wound frames."
         gr.Warning(message, duration=5)
         return message
 
     try:
-        written_paths = store_original_frames(video_frames, DEFAULT_FRAMES_DIR)
-    except Exception as exc:
-        message = f"Failed to store frames: {exc}"
-        gr.Warning(message, duration=5)
-        return message
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from export_yolo_segmentation_dataset import export_no_wound_frames_to_yolo_dataset
 
-    return f"Stored {len(written_paths)} original frames in {DEFAULT_FRAMES_DIR}."
-
-
-def store_coordinates_from_state(video_frames, video_preview_array, selected_tracks, selected_visibility, selected_point_labels):
-    if selected_tracks is None:
-        message = "Track selected points before storing coordinates."
-        gr.Warning(message, duration=5)
-        return message
-    if video_frames is None or video_preview_array is None:
-        message = "Submit and track a video before storing coordinates."
-        gr.Warning(message, duration=5)
-        return message
-
-    try:
-        written_paths = store_coordinate_arrays(
-            tracks=selected_tracks,
-            output_dir=DEFAULT_COORDINATES_DIR,
-            source_hw=video_preview_array.shape[1:3],
-            target_hw=video_frames.shape[1:3],
-            visibility=selected_visibility,
-            point_labels=selected_point_labels,
+        stats = export_no_wound_frames_to_yolo_dataset(
+            frames=video_frames,
+            output_dir=DEFAULT_YOLO_DATASET_DIR,
+            train_ratio=0.8,
         )
     except Exception as exc:
-        message = f"Failed to store coordinates: {exc}"
+        message = f"Failed to export no-wound frames: {exc}"
         gr.Warning(message, duration=5)
         return message
 
-    frame_files = max(0, len(written_paths) - 1)
     return (
-        f"Stored selected-point coordinates for {frame_files} frames in "
-        f"{DEFAULT_COORDINATES_DIR}."
+        f"Exported {stats.exported_images} no-wound frame(s) to {DEFAULT_YOLO_DATASET_DIR}: "
+        f"{stats.train_images} train and {stats.val_images} val image(s), "
+        "each with an empty label."
     )
 
 
@@ -1317,12 +1555,78 @@ def get_sam_preview_runtime(sam_model):
         )
         runtime = {
             "predictor": predictor,
+            "predictor_lock": threading.Lock(),
             "device": device,
             "model_name": model_name,
             "model_label": model_option["label"],
+            "image_cache_key": None,
         }
         sam_preview_runtimes[model_name] = runtime
         return runtime
+
+
+def preload_sam_preview_runtime(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    try:
+        runtime = get_sam_preview_runtime(model_name)
+        with sam_preview_preload_lock:
+            sam_preview_preload_errors.pop(model_name, None)
+        print(
+            f"SAM preview model preloaded: {runtime['model_label']} on {runtime['device']}",
+            flush=True,
+        )
+    except Exception as exc:
+        with sam_preview_preload_lock:
+            sam_preview_preload_errors[model_name] = str(exc)
+            sam_preview_preload_started.discard(model_name)
+        print(f"SAM preview model preload failed for {model_name}: {exc}", flush=True)
+
+
+def start_sam_preview_preload(sam_model=DEFAULT_SAM_IMAGE_MODEL):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    with sam_preview_preload_lock:
+        if model_name in sam_preview_preload_started or model_name in sam_preview_runtimes:
+            return
+        sam_preview_preload_started.add(model_name)
+
+    thread = threading.Thread(
+        target=preload_sam_preview_runtime,
+        args=(model_name,),
+        daemon=True,
+        name=f"sam-preview-preload-{model_name}",
+    )
+    thread.start()
+
+
+def get_sam_preview_runtime_if_ready(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    runtime_message = (
+        f"SAM preview model {model_name} is still loading or downloading. "
+        "Try Preview SAM again in a moment."
+    )
+
+    acquired = sam_preview_runtime_lock.acquire(blocking=False)
+    if not acquired:
+        start_sam_preview_preload(model_name)
+        return None, runtime_message
+
+    try:
+        runtime = sam_preview_runtimes.get(model_name)
+        if runtime is not None:
+            return runtime, None
+    finally:
+        sam_preview_runtime_lock.release()
+
+    with sam_preview_preload_lock:
+        previous_error = sam_preview_preload_errors.get(model_name)
+    start_sam_preview_preload(model_name)
+    if previous_error:
+        return (
+            None,
+            f"SAM preview model {model_name} failed to load previously: {previous_error}. "
+            "Retrying in the background.",
+        )
+    return None, runtime_message
 
 
 def as_uint8_rgb_frame(frame):
@@ -1336,6 +1640,60 @@ def as_uint8_rgb_frame(frame):
             image = image * 255
         image = np.clip(image, 0, 255).astype(np.uint8)
     return image.copy()
+
+
+def sam_preview_frame_cache_key(frame):
+    image = np.ascontiguousarray(as_uint8_rgb_frame(frame))
+    digest = hashlib.blake2b(image.tobytes(), digest_size=16).hexdigest()
+    return image.shape, str(image.dtype), digest
+
+
+def predict_sam_preview_mask(runtime, frame, point_coords, point_labels):
+    frame_cache_key = sam_preview_frame_cache_key(frame)
+    predictor = runtime["predictor"]
+    with runtime["predictor_lock"]:
+        if runtime.get("image_cache_key") != frame_cache_key:
+            predictor.set_image(frame)
+            runtime["image_cache_key"] = frame_cache_key
+        return predictor.predict(
+            point_coords=point_coords.astype(np.float32),
+            point_labels=point_labels.astype(np.int32),
+            multimask_output=True,
+            normalize_coords=True,
+        )
+
+
+def sam_preview_mask_values_at_points(mask, points):
+    if len(points) == 0:
+        return np.empty((0,), dtype=bool)
+    mask_array = np.asarray(mask).astype(bool)
+    height, width = mask_array.shape[:2]
+    rounded = np.rint(np.asarray(points, dtype=np.float32)).astype(np.int32)
+    xs = np.clip(rounded[:, 0], 0, width - 1)
+    ys = np.clip(rounded[:, 1], 0, height - 1)
+    return mask_array[ys, xs].astype(bool)
+
+
+def select_sam_preview_mask(masks, scores, point_coords, point_labels):
+    masks_array = np.asarray(masks).astype(bool)
+    if len(masks_array) == 0:
+        raise ValueError("SAM returned no masks for preview.")
+
+    coords = np.asarray(point_coords, dtype=np.float32)
+    labels = np.asarray(point_labels, dtype=np.int32)
+    positives = coords[labels == 1]
+    negatives = coords[labels == 0]
+    scored_indices = []
+    for index, mask in enumerate(masks_array):
+        positive_hits = sam_preview_mask_values_at_points(mask, positives)
+        negative_hits = sam_preview_mask_values_at_points(mask, negatives)
+        positive_score = float(np.mean(positive_hits)) if len(positive_hits) else 0.0
+        negative_score = float(np.mean(~negative_hits)) if len(negative_hits) else 1.0
+        sam_score = float(scores[index]) if index < len(scores) else 0.0
+        area = float(np.count_nonzero(mask))
+        combined_score = 5.0 * positive_score + 4.0 * negative_score + sam_score
+        scored_indices.append((combined_score, sam_score, -area, index))
+    return int(max(scored_indices)[-1])
 
 
 def draw_sam_preview(frame, mask, point_coords, point_labels):
@@ -1357,6 +1715,37 @@ def draw_sam_preview(frame, mask, point_coords, point_labels):
     return preview
 
 
+def format_sam_prompt_summary(point_coords, point_labels, max_points=12):
+    coords = np.asarray(point_coords, dtype=np.float32).reshape(-1, 2)
+    labels = np.asarray(point_labels, dtype=np.int32).reshape(-1)
+    display_count = min(len(coords), int(max_points))
+    display_coords = [
+        [round(float(x), 2), round(float(y), 2)]
+        for x, y in coords[:display_count]
+    ]
+    display_labels = [int(label) for label in labels[:display_count]]
+    suffix = ""
+    if len(coords) > display_count:
+        suffix = f", showing first {display_count} of {len(coords)}"
+    return f"point_coords={display_coords}, point_labels={display_labels}{suffix}"
+
+
+def format_sam_video_progress_html(completed_frames, total_frames, message):
+    total = max(1, int(total_frames))
+    completed = int(np.clip(int(completed_frames), 0, total))
+    percent = int(round((completed / total) * 100))
+    return f"""
+<div style="width: 100%; padding: 6px 0;">
+  <div style="display: flex; justify-content: space-between; font-size: 13px; color: #344054; margin-bottom: 4px;">
+    <span>{message}</span><span>{percent}%</span>
+  </div>
+  <div style="height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden;">
+    <div style="height: 100%; width: {percent}%; background: #2563eb;"></div>
+  </div>
+</div>
+"""
+
+
 def sam_point_prompts_for_frame(
     video_frames,
     video_preview_array,
@@ -1368,6 +1757,7 @@ def sam_point_prompts_for_frame(
     prefer_tracked_points=False,
     refinement_query_points=None,
     tracked_prompt_sources=None,
+    refinement_source_frames=None,
 ):
     point_coords = np.empty((0, 2), dtype=np.float32)
     point_labels = np.empty((0,), dtype=np.int32)
@@ -1420,10 +1810,15 @@ def sam_point_prompts_for_frame(
         tracked_prompt_sources,
         frame_count=len(video_frames),
     )
+    refinement_source_hw = (
+        np.asarray(refinement_source_frames).shape[1:3]
+        if refinement_source_frames is not None
+        else video_preview_array.shape[1:3]
+    )
     refinement_coords, refinement_labels = labeled_query_points_for_frame(
         pending_refinement_query_points,
         frame_index,
-        source_hw=video_preview_array.shape[1:3],
+        source_hw=refinement_source_hw,
         target_hw=video_frames.shape[1:3],
     )
     if len(refinement_coords) > 0:
@@ -1451,6 +1846,7 @@ def preview_sam_on_frame(
     prefer_tracked_points=False,
     refinement_query_points=None,
     tracked_prompt_sources=None,
+    refinement_source_frames=None,
 ):
     if video_frames is None or video_preview_array is None:
         message = "Submit a video before previewing SAM."
@@ -1469,6 +1865,7 @@ def preview_sam_on_frame(
         prefer_tracked_points=prefer_tracked_points,
         refinement_query_points=refinement_query_points,
         tracked_prompt_sources=tracked_prompt_sources,
+        refinement_source_frames=refinement_source_frames,
     )
 
     if len(point_coords) == 0:
@@ -1480,17 +1877,16 @@ def preview_sam_on_frame(
         gr.Warning(message, duration=5)
         return as_uint8_rgb_frame(video_frames[frame_index]), message
 
-    runtime = get_sam_preview_runtime(sam_model)
-    predictor = runtime["predictor"]
     frame = as_uint8_rgb_frame(video_frames[frame_index])
-    predictor.set_image(frame)
-    masks, scores, _ = predictor.predict(
-        point_coords=point_coords.astype(np.float32),
-        point_labels=point_labels.astype(np.int32),
-        multimask_output=len(point_coords) == 1,
-        normalize_coords=True,
-    )
-    best_mask = masks[int(np.argmax(scores))]
+    prompt_summary = format_sam_prompt_summary(point_coords, point_labels)
+    runtime, loading_message = get_sam_preview_runtime_if_ready(sam_model)
+    if runtime is None:
+        empty_mask = np.zeros(frame.shape[:2], dtype=bool)
+        prompt_preview = draw_sam_preview(frame, empty_mask, point_coords, point_labels)
+        return prompt_preview, f"{loading_message} Loaded prompts: {prompt_summary}."
+
+    masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
+    best_mask = masks[select_sam_preview_mask(masks, scores, point_coords, point_labels)]
     preview = draw_sam_preview(frame, best_mask, point_coords, point_labels)
     positive_count = int(np.sum(point_labels == 1))
     negative_count = int(np.sum(point_labels == 0))
@@ -1498,7 +1894,8 @@ def preview_sam_on_frame(
         preview,
         f"SAM preview frame {frame_index} from {prompt_source} points with "
         f"{runtime['model_label']} on {runtime['device']} "
-        f"({positive_count} positive, {negative_count} negative point(s)).",
+        f"({positive_count} positive, {negative_count} negative point(s)). "
+        f"Loaded prompts: {prompt_summary}.",
     )
 
 
@@ -1518,6 +1915,7 @@ def preview_sam_for_selected_frame(
 ):
     has_processed_selection = tracked_video_preview is not None and selected_tracks is not None
     frame_num = tracked_frame_num if has_processed_selection else query_frame_num
+    refinement_source_frames = tracked_video_preview if has_processed_selection else None
     return preview_sam_on_frame(
         video_frames,
         video_preview_array,
@@ -1530,7 +1928,62 @@ def preview_sam_for_selected_frame(
         prefer_tracked_points=has_processed_selection,
         refinement_query_points=refinement_query_points,
         tracked_prompt_sources=tracked_prompt_sources,
+        refinement_source_frames=refinement_source_frames,
     )
+
+
+def preview_sam_on_frame_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    frame_num,
+    sam_model,
+):
+    preview, status = preview_sam_on_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_num,
+        sam_model,
+    )
+    return preview, current_sam_model_progress_html(sam_model), status
+
+
+def preview_sam_for_selected_frame_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
+    preview, status = preview_sam_for_selected_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        query_frame_num,
+        tracked_frame_num,
+        tracked_video_preview,
+        sam_model,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+    )
+    return preview, current_sam_model_progress_html(sam_model), status
 
 
 def preview_sam_video_for_processed_frames(
@@ -1550,16 +2003,25 @@ def preview_sam_video_for_processed_frames(
     if video_frames is None or video_preview_array is None:
         message = "Submit and track a video before running SAM video review."
         gr.Warning(message, duration=5)
-        return None, message
+        yield SAM_VIDEO_PROGRESS_READY, None, message
+        return
     if tracked_video_preview is None or selected_tracks is None or selected_point_labels is None:
         message = "Track selected points before running SAM video review."
         gr.Warning(message, duration=5)
-        return None, message
+        yield SAM_VIDEO_PROGRESS_READY, None, message
+        return
 
     try:
         skip_count = parse_frame_skip_count(sam_video_skip_frames)
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
+
+    frame_count = len(video_frames)
+    yield (
+        format_sam_video_progress_html(0, frame_count, "Loading SAM model"),
+        None,
+        "Loading SAM model for video review...",
+    )
 
     runtime = get_sam_preview_runtime(sam_model)
     predictor = runtime["predictor"]
@@ -1568,13 +2030,25 @@ def preview_sam_video_for_processed_frames(
     skipped_by_frame_skip = 0
     skipped_no_points = 0
     skipped_no_positive = 0
-    frame_count = len(video_frames)
+    yield (
+        format_sam_video_progress_html(0, frame_count, "Starting SAM video review"),
+        None,
+        "Starting SAM video review...",
+    )
 
     for frame_index in range(frame_count):
         frame = as_uint8_rgb_frame(video_frames[frame_index])
         if not should_process_frame_for_skip(frame_index, skip_count):
             skipped_by_frame_skip += 1
-            review_frames.append(frame)
+            yield (
+                format_sam_video_progress_html(
+                    frame_index + 1,
+                    frame_count,
+                    f"Checked frame {frame_index + 1}/{frame_count}",
+                ),
+                None,
+                f"SAM video review checked {frame_index + 1}/{frame_count} frame(s).",
+            )
             continue
 
         point_coords, point_labels, _ = sam_point_prompts_for_frame(
@@ -1588,26 +2062,69 @@ def preview_sam_video_for_processed_frames(
             prefer_tracked_points=True,
             refinement_query_points=refinement_query_points,
             tracked_prompt_sources=tracked_prompt_sources,
+            refinement_source_frames=tracked_video_preview,
         )
         if len(point_coords) == 0:
             skipped_no_points += 1
-            review_frames.append(frame)
+            yield (
+                format_sam_video_progress_html(
+                    frame_index + 1,
+                    frame_count,
+                    f"Checked frame {frame_index + 1}/{frame_count}",
+                ),
+                None,
+                f"SAM video review checked {frame_index + 1}/{frame_count} frame(s).",
+            )
             continue
         if not np.any(point_labels == 1):
             skipped_no_positive += 1
-            review_frames.append(frame)
+            yield (
+                format_sam_video_progress_html(
+                    frame_index + 1,
+                    frame_count,
+                    f"Checked frame {frame_index + 1}/{frame_count}",
+                ),
+                None,
+                f"SAM video review checked {frame_index + 1}/{frame_count} frame(s).",
+            )
             continue
 
         predictor.set_image(frame)
         masks, scores, _ = predictor.predict(
             point_coords=point_coords.astype(np.float32),
             point_labels=point_labels.astype(np.int32),
-            multimask_output=len(point_coords) == 1,
+            multimask_output=True,
             normalize_coords=True,
         )
-        best_mask = masks[int(np.argmax(scores))]
+        best_mask = masks[select_sam_preview_mask(masks, scores, point_coords, point_labels)]
         review_frames.append(draw_sam_preview(frame, best_mask, point_coords, point_labels))
         processed_count += 1
+        yield (
+            format_sam_video_progress_html(
+                frame_index + 1,
+                frame_count,
+                f"Processed frame {frame_index + 1}/{frame_count}",
+            ),
+            None,
+            f"SAM video review processed {processed_count} frame(s).",
+        )
+
+    skipped_parts = []
+    if skipped_by_frame_skip:
+        skipped_parts.append(f"{skipped_by_frame_skip} by skip setting")
+    if skipped_no_points:
+        skipped_parts.append(f"{skipped_no_points} without points")
+    if skipped_no_positive:
+        skipped_parts.append(f"{skipped_no_positive} without positive points")
+    skipped_text = f"; skipped {', '.join(skipped_parts)}" if skipped_parts else ""
+
+    if not review_frames:
+        yield (
+            format_sam_video_progress_html(frame_count, frame_count, "SAM video review complete"),
+            None,
+            f"No SAM-processed frames were available for video review{skipped_text}.",
+        )
+        return
 
     video_file_name = uuid.uuid4().hex + ".mp4"
     video_path = os.path.join(os.path.dirname(__file__), "tmp")
@@ -1618,15 +2135,8 @@ def preview_sam_video_for_processed_frames(
         output_fps = 24
     mediapy.write_video(video_file_path, np.asarray(review_frames), fps=output_fps)
 
-    skipped_parts = []
-    if skipped_by_frame_skip:
-        skipped_parts.append(f"{skipped_by_frame_skip} by skip setting")
-    if skipped_no_points:
-        skipped_parts.append(f"{skipped_no_points} without points")
-    if skipped_no_positive:
-        skipped_parts.append(f"{skipped_no_positive} without positive points")
-    skipped_text = f"; skipped {', '.join(skipped_parts)}" if skipped_parts else ""
-    return (
+    yield (
+        format_sam_video_progress_html(frame_count, frame_count, "SAM video review complete"),
         video_file_path,
         (
             f"SAM video review complete for {processed_count}/{frame_count} frame(s) "
@@ -1766,6 +2276,12 @@ with gr.Blocks() as demo:
                     label="Point Type",
                     interactive=True,
                 )
+                query_point_edit_mode = gr.Radio(
+                    choices=list(POINT_EDIT_MODE_CHOICES),
+                    value=POINT_ADD_MODE,
+                    label="Mode",
+                    interactive=True,
+                )
             with gr.Row():
                 undo = gr.Button("Undo", interactive=False)
                 clear_frame = gr.Button("Clear Frame", interactive=False)
@@ -1773,44 +2289,36 @@ with gr.Blocks() as demo:
 
             with gr.Row():
                 current_frame = gr.Image(
-                    label="Click to add query points", 
+                    label="Click to add/delete query points",
                     type="numpy",
                     interactive=False
                 )
             with gr.Row():
-                sam_model_dropdown = gr.Dropdown(
-                    choices=list(SAM_IMAGE_MODEL_CHOICES),
-                    value=DEFAULT_SAM_IMAGE_MODEL,
-                    label="SAM Image Model",
-                    interactive=False,
-                )
-                sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
+                track_button = gr.Button("Track", interactive=False)
             output_video = gr.Video(
                 label="Output Video",
                 interactive=False,
                 autoplay=True,
                 loop=True,
             )
-            
-            with gr.Row():
-                track_button = gr.Button("Track", interactive=False)
+            no_wound_export_button = gr.Button("Export No-Wound Frames to YOLO", interactive=False)
 
         with gr.Column():
+            sam_model_dropdown = gr.Dropdown(
+                choices=list(SAM_IMAGE_MODEL_CHOICES),
+                value=DEFAULT_SAM_IMAGE_MODEL,
+                label="SAM Image Model",
+                interactive=False,
+            )
+            sam_model_loading_progress = gr.HTML(
+                value=SAM_MODEL_PROGRESS_READY,
+                show_label=False,
+            )
+            sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
             sam_preview_image = gr.Image(
                 label="SAM point preview",
                 type="numpy",
                 interactive=False,
-            )
-            with gr.Row():
-                store_frames_button = gr.Button("Store Frames", interactive=False)
-                store_coordinates_button = gr.Button(
-                    "Store Coordinates of Tracked Object",
-                    interactive=False,
-                )
-            export_status = gr.Textbox(
-                label="Export Status",
-                interactive=False,
-                lines=3,
             )
 
     gr.Markdown("## Third step: Fine-tune point adjustment of cotracker and Preview effect of SAM on processed video.")
@@ -1854,11 +2362,20 @@ with gr.Blocks() as demo:
                 label="SAM Image Model",
                 interactive=False,
             )
+            processed_sam_model_loading_progress = gr.HTML(
+                value=SAM_MODEL_PROGRESS_READY,
+                show_label=False,
+            )
             processed_sam_preview_button = gr.Button("Preview SAM on Selected Frame", interactive=False)
             processed_sam_preview_image = gr.Image(
                 label="SAM point preview",
                 type="numpy",
                 interactive=False,
+            )
+            export_status = gr.Textbox(
+                label="Export Status",
+                interactive=False,
+                lines=3,
             )
             processed_sam_video_skip_frames = gr.Number(
                 value=0,
@@ -1867,6 +2384,10 @@ with gr.Blocks() as demo:
                 interactive=False,
             )
             processed_sam_video_button = gr.Button("Preview SAM on Processed Video", interactive=False)
+            processed_sam_video_progress = gr.HTML(
+                value=SAM_VIDEO_PROGRESS_READY,
+                show_label=False,
+            )
             processed_sam_video = gr.Video(
                 label="SAM video review",
                 interactive=False,
@@ -1922,16 +2443,18 @@ with gr.Blocks() as demo:
             selected_visibility,
             selected_point_labels,
             tracked_prompt_sources,
-            store_frames_button,
-            store_coordinates_button,
+            no_wound_export_button,
             sam_model_dropdown,
+            sam_model_loading_progress,
             sam_preview_button,
             sam_preview_image,
             processed_sam_model_dropdown,
+            processed_sam_model_loading_progress,
             processed_sam_preview_button,
             processed_sam_preview_image,
             processed_sam_video_skip_frames,
             processed_sam_video_button,
+            processed_sam_video_progress,
             processed_sam_video,
             tracked_video_preview,
             tracked_query_frames,
@@ -1961,11 +2484,35 @@ with gr.Blocks() as demo:
         queue = False
     )
 
+    sam_model_dropdown.change(
+        fn = stream_sam_model_loading_progress,
+        inputs = [
+            sam_model_dropdown,
+        ],
+        outputs = [
+            sam_model_loading_progress,
+        ],
+        queue = True,
+    )
+
+    processed_sam_model_dropdown.change(
+        fn = stream_sam_model_loading_progress,
+        inputs = [
+            processed_sam_model_dropdown,
+        ],
+        outputs = [
+            processed_sam_model_loading_progress,
+        ],
+        queue = True,
+    )
+
     current_frame.select(
         fn = get_point, 
         inputs = [
             query_frames,
             point_type,
+            query_point_edit_mode,
+            video_preview,
             video_queried_preview,
             query_points,
             query_points_color,
@@ -2061,12 +2608,13 @@ with gr.Blocks() as demo:
             tracked_frame_preview,
             refinement_query_points,
             reprocess_button,
-            store_frames_button,
-            store_coordinates_button,
+            no_wound_export_button,
             processed_sam_model_dropdown,
+            processed_sam_model_loading_progress,
             processed_sam_preview_button,
             processed_sam_video_skip_frames,
             processed_sam_video_button,
+            processed_sam_video_progress,
             processed_sam_video,
             export_status,
         ],
@@ -2168,6 +2716,7 @@ with gr.Blocks() as demo:
             query_points_color,
             refinement_query_points,
             tracked_query_frames,
+            processed_sam_model_dropdown,
         ],
         outputs = [
             output_video,
@@ -2178,37 +2727,23 @@ with gr.Blocks() as demo:
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
-            store_frames_button,
-            store_coordinates_button,
+            no_wound_export_button,
             processed_sam_model_dropdown,
+            processed_sam_model_loading_progress,
             processed_sam_preview_button,
             processed_sam_video_skip_frames,
             processed_sam_video_button,
+            processed_sam_video_progress,
             processed_sam_video,
             export_status,
         ],
         queue = False,
     )
 
-    store_frames_button.click(
-        fn = store_frames_from_state,
+    no_wound_export_button.click(
+        fn = export_no_wound_frames_from_state,
         inputs = [
             video,
-        ],
-        outputs = [
-            export_status,
-        ],
-        queue = False,
-    )
-
-    store_coordinates_button.click(
-        fn = store_coordinates_from_state,
-        inputs = [
-            video,
-            video_preview,
-            selected_tracks,
-            selected_visibility,
-            selected_point_labels,
         ],
         outputs = [
             export_status,
@@ -2217,7 +2752,7 @@ with gr.Blocks() as demo:
     )
 
     sam_preview_button.click(
-        fn = preview_sam_on_frame,
+        fn = preview_sam_on_frame_with_progress,
         inputs = [
             video,
             video_preview,
@@ -2230,13 +2765,14 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             sam_preview_image,
+            sam_model_loading_progress,
             export_status,
         ],
         queue = False,
     )
 
     processed_sam_preview_button.click(
-        fn = preview_sam_for_selected_frame,
+        fn = preview_sam_for_selected_frame_with_progress,
         inputs = [
             video,
             video_preview,
@@ -2253,6 +2789,7 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             processed_sam_preview_image,
+            processed_sam_model_loading_progress,
             export_status,
         ],
         queue = False,
@@ -2275,10 +2812,11 @@ with gr.Blocks() as demo:
             tracked_prompt_sources,
         ],
         outputs = [
+            processed_sam_video_progress,
             processed_sam_video,
             export_status,
         ],
-        queue = False,
+        queue = True,
     )
 
     save_sam_video_button.click(

@@ -1,6 +1,8 @@
 import json
+import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -10,11 +12,14 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import sam2_coordinate_wrapper as sam2_wrapper  # noqa: E402
 from sam2_coordinate_wrapper import (  # noqa: E402
     DEFAULT_SAM2_MODEL,
     SAM2_MODEL_CHOICES,
+    checkpoint_file_looks_unavailable,
     iter_sam2_coordinate_prompt_folder_steps,
     load_sam2_prompt_objects,
+    resolve_sam2_checkpoint,
     resolve_sam2_model_option,
     run_sam2_for_frame,
     select_frames_for_frame_step,
@@ -73,6 +78,224 @@ class SAM2CoordinateWrapperTest(unittest.TestCase):
     def test_sam2_model_option_rejects_unknown_model(self):
         with self.assertRaisesRegex(ValueError, "sam2.1_hiera_small.pt"):
             resolve_sam2_model_option("bad-model.pt")
+
+    def test_sparse_checkpoint_file_looks_unavailable(self):
+        sparse_stat = type("StatResult", (), {"st_size": 1024 * 1024, "st_blocks": 0})()
+        mostly_sparse_stat = type("StatResult", (), {"st_size": 1024 * 1024, "st_blocks": 8})()
+        normal_stat = type("StatResult", (), {"st_size": 1024 * 1024, "st_blocks": 2048})()
+
+        with patch.object(sam2_wrapper.Path, "stat", return_value=sparse_stat):
+            self.assertTrue(checkpoint_file_looks_unavailable(Path("placeholder.pt")))
+        with patch.object(sam2_wrapper.Path, "stat", return_value=mostly_sparse_stat):
+            self.assertTrue(checkpoint_file_looks_unavailable(Path("mostly-sparse.pt")))
+        with patch.object(sam2_wrapper.Path, "stat", return_value=normal_stat):
+            self.assertFalse(checkpoint_file_looks_unavailable(Path("normal.pt")))
+
+    def test_resolve_checkpoint_redownloads_unavailable_model_file(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            placeholder = tmp_path / "sam2.1_hiera_tiny.pt"
+            replacement = tmp_path / "replacement.pt"
+            with placeholder.open("wb") as handle:
+                handle.truncate(1024 * 1024)
+            replacement.write_bytes(b"downloaded-checkpoint")
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.object(
+                    sam2_wrapper,
+                    "download_sam2_checkpoint",
+                    return_value=replacement,
+                ) as download:
+                    resolved = resolve_sam2_checkpoint(
+                        model_name="sam2.1_hiera_tiny.pt",
+                        download_checkpoint=True,
+                    )
+
+            self.assertEqual(resolved, replacement)
+            download.assert_called_once_with("sam2.1_hiera_tiny.pt")
+
+    def test_resolve_checkpoint_redownloads_incomplete_model_file(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            incomplete = tmp_path / "sam2.1_hiera_tiny.pt"
+            replacement = tmp_path / "replacement.pt"
+            incomplete.write_bytes(b"partial")
+            replacement.write_bytes(b"downloaded-checkpoint")
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.object(
+                    sam2_wrapper,
+                    "download_sam2_checkpoint",
+                    return_value=replacement,
+                ) as download:
+                    resolved = resolve_sam2_checkpoint(
+                        model_name="sam2.1_hiera_tiny.pt",
+                        download_checkpoint=True,
+                    )
+
+            self.assertEqual(resolved, replacement)
+            download.assert_called_once_with("sam2.1_hiera_tiny.pt")
+
+    def test_download_checkpoint_falls_back_to_curl_when_urlretrieve_fails(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            curl_calls = []
+
+            def fake_curl_run(command, check):
+                curl_calls.append(command)
+                output_path = Path(command[command.index("-o") + 1])
+                output_path.write_bytes(b"downloaded-with-curl")
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.dict(
+                    sam2_wrapper.SAM2_MODEL_OPTIONS["sam2.1_hiera_tiny.pt"],
+                    {"expected_size": len(b"downloaded-with-curl")},
+                ):
+                    with patch.object(
+                        sam2_wrapper.urllib.request,
+                        "urlretrieve",
+                        side_effect=OSError("EOF occurred in violation of protocol"),
+                    ):
+                        with patch.object(sam2_wrapper.shutil, "which", return_value="/usr/bin/curl"):
+                            with patch("subprocess.run", side_effect=fake_curl_run):
+                                resolved = sam2_wrapper.download_sam2_checkpoint("sam2.1_hiera_tiny.pt")
+
+            self.assertEqual(resolved, tmp_path / "sam2.1_hiera_tiny.pt")
+            self.assertEqual(resolved.read_bytes(), b"downloaded-with-curl")
+            self.assertEqual(len(curl_calls), 1)
+            self.assertIn("/usr/bin/curl", curl_calls[0])
+            self.assertIn("--fail", curl_calls[0])
+            self.assertIn("--location", curl_calls[0])
+
+    def test_download_checkpoint_prefers_resumable_curl_on_libressl(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            partial_path = tmp_path / "sam2.1_hiera_tiny.pt.download"
+            partial_path.write_bytes(b"partial-")
+            curl_calls = []
+
+            def fake_curl_run(command, check):
+                curl_calls.append(command)
+                output_path = Path(command[command.index("-o") + 1])
+                with output_path.open("ab") as handle:
+                    handle.write(b"resumed")
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.dict(
+                    sam2_wrapper.SAM2_MODEL_OPTIONS["sam2.1_hiera_tiny.pt"],
+                    {"expected_size": len(b"partial-resumed")},
+                ):
+                    with patch.object(
+                        sam2_wrapper.urllib.request,
+                        "urlretrieve",
+                        side_effect=AssertionError("urllib should not run on LibreSSL"),
+                    ):
+                        with patch.object(sam2_wrapper.shutil, "which", return_value="/usr/bin/curl"):
+                            with patch("ssl.OPENSSL_VERSION", "LibreSSL 2.8.3"):
+                                with patch("subprocess.run", side_effect=fake_curl_run):
+                                    resolved = sam2_wrapper.download_sam2_checkpoint("sam2.1_hiera_tiny.pt")
+
+            self.assertEqual(resolved.read_bytes(), b"partial-resumed")
+            self.assertEqual(len(curl_calls), 1)
+            self.assertIn("--http1.1", curl_calls[0])
+            self.assertIn("--range", curl_calls[0])
+            self.assertIn(f"{len(b'partial-')}-", curl_calls[0])
+            self.assertNotIn("--continue-at", curl_calls[0])
+
+    def test_download_checkpoint_resumes_larger_partial_final_file(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            final_path = tmp_path / "sam2.1_hiera_tiny.pt"
+            partial_path = tmp_path / "sam2.1_hiera_tiny.pt.download"
+            final_path.write_bytes(b"larger-partial-")
+            partial_path.write_bytes(b"old-")
+            curl_calls = []
+
+            def fake_curl_run(command, check):
+                curl_calls.append(command)
+                output_path = Path(command[command.index("-o") + 1])
+                with output_path.open("ab") as handle:
+                    handle.write(b"resumed")
+                return subprocess.CompletedProcess(command, 0)
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.dict(
+                    sam2_wrapper.SAM2_MODEL_OPTIONS["sam2.1_hiera_tiny.pt"],
+                    {"expected_size": len(b"larger-partial-resumed")},
+                ):
+                    with patch.object(sam2_wrapper.shutil, "which", return_value="/usr/bin/curl"):
+                        with patch("ssl.OPENSSL_VERSION", "LibreSSL 2.8.3"):
+                            with patch("subprocess.run", side_effect=fake_curl_run):
+                                resolved = sam2_wrapper.download_sam2_checkpoint("sam2.1_hiera_tiny.pt")
+
+            self.assertEqual(resolved.read_bytes(), b"larger-partial-resumed")
+            self.assertEqual(len(curl_calls), 1)
+            self.assertIn("--range", curl_calls[0])
+            self.assertIn(f"{len(b'larger-partial-')}-", curl_calls[0])
+            self.assertNotIn("--continue-at", curl_calls[0])
+
+    def test_download_checkpoint_reports_partial_progress_when_curl_resume_fails(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            partial_path = tmp_path / "sam2.1_hiera_tiny.pt.download"
+            partial_path.write_bytes(b"x" * 25)
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.dict(
+                    sam2_wrapper.SAM2_MODEL_OPTIONS["sam2.1_hiera_tiny.pt"],
+                    {"expected_size": 100},
+                ):
+                    with patch.object(sam2_wrapper.shutil, "which", return_value="/usr/bin/curl"):
+                        with patch("ssl.OPENSSL_VERSION", "LibreSSL 2.8.3"):
+                            with patch(
+                                "subprocess.run",
+                                side_effect=subprocess.CalledProcessError(56, ["curl"]),
+                            ):
+                                with self.assertRaisesRegex(
+                                    RuntimeError,
+                                    "25/100 bytes.*curl exited with status 56",
+                                ):
+                                    sam2_wrapper.download_sam2_checkpoint("sam2.1_hiera_tiny.pt")
+
+    def test_download_checkpoint_restarts_sparse_partial_download_file(self):
+        with TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            partial_path = tmp_path / "sam2.1_hiera_tiny.pt.download"
+            partial_path.write_bytes(b"x" * 25)
+            stale_range_path = tmp_path / "sam2.1_hiera_tiny.pt.download.range"
+            stale_range_path.write_bytes(b"stale-range")
+            curl_calls = []
+
+            def fake_curl_run(command, check):
+                curl_calls.append(command)
+                output_path = Path(command[command.index("-o") + 1])
+                output_path.write_bytes(b"fresh-download")
+                return subprocess.CompletedProcess(command, 0)
+
+            def fake_unavailable(path):
+                return Path(path).name.endswith(".download")
+
+            with patch.object(sam2_wrapper, "SAM2_CHECKPOINTS_DIR", tmp_path):
+                with patch.dict(
+                    sam2_wrapper.SAM2_MODEL_OPTIONS["sam2.1_hiera_tiny.pt"],
+                    {"expected_size": len(b"fresh-download")},
+                ):
+                    with patch.object(sam2_wrapper.shutil, "which", return_value="/usr/bin/curl"):
+                        with patch("ssl.OPENSSL_VERSION", "LibreSSL 2.8.3"):
+                            with patch.object(
+                                sam2_wrapper,
+                                "checkpoint_file_looks_unavailable",
+                                side_effect=fake_unavailable,
+                            ):
+                                with patch("subprocess.run", side_effect=fake_curl_run):
+                                    resolved = sam2_wrapper.download_sam2_checkpoint("sam2.1_hiera_tiny.pt")
+
+            self.assertEqual(resolved.read_bytes(), b"fresh-download")
+            self.assertEqual(len(curl_calls), 1)
+            self.assertNotIn("--range", curl_calls[0])
+            self.assertFalse(stale_range_path.exists())
 
     def test_load_sam2_prompt_objects_uses_augmented_json_directly(self):
         with TemporaryDirectory() as tmp:

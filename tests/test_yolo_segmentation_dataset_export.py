@@ -1,14 +1,23 @@
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from unittest.mock import patch
 
+import numpy as np
 from PIL import Image, ImageDraw
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from export_yolo_segmentation_dataset import export_yolo_segmentation_dataset  # noqa: E402
+import export_yolo_segmentation_dataset as yolo_exporter  # noqa: E402
+from export_yolo_segmentation_dataset import (  # noqa: E402
+    export_no_wound_frames_to_yolo_dataset,
+    export_yolo_segmentation_dataset,
+    validate_yolo_segmentation_dataset,
+)
 
 
 class YoloSegmentationDatasetExportTest(unittest.TestCase):
@@ -204,6 +213,178 @@ class YoloSegmentationDatasetExportTest(unittest.TestCase):
             coords = [float(value) for value in label_row.split()[1:]]
             x_coords = coords[0::2]
             self.assertLess(max(x_coords), 0.5)
+
+    def test_exports_no_wound_frames_with_empty_labels_and_80_20_split(self):
+        with TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "dataset"
+            frames = np.zeros((5, 20, 30, 3), dtype=np.uint8)
+            for index in range(len(frames)):
+                frames[index, :, :] = [index * 20, 80, 120]
+
+            stats = export_no_wound_frames_to_yolo_dataset(
+                frames=frames,
+                output_dir=dataset_dir,
+            )
+
+            self.assertEqual(stats.exported_images, 5)
+            self.assertEqual(stats.labels, 5)
+            self.assertEqual(stats.total_wound_instances, 0)
+            self.assertEqual(stats.train_images, 4)
+            self.assertEqual(stats.val_images, 1)
+
+            train_images = sorted((dataset_dir / "images" / "train").glob("*.jpg"))
+            val_images = sorted((dataset_dir / "images" / "val").glob("*.jpg"))
+            self.assertEqual([path.name for path in train_images], [
+                "train_img00001.jpg",
+                "train_img00002.jpg",
+                "train_img00003.jpg",
+                "train_img00004.jpg",
+            ])
+            self.assertEqual([path.name for path in val_images], ["val_img00001.jpg"])
+
+            for image_path in train_images + val_images:
+                split = image_path.parent.name
+                label_path = dataset_dir / "labels" / split / f"{image_path.stem}.txt"
+                self.assertTrue(label_path.exists())
+                self.assertEqual(label_path.read_bytes(), b"")
+
+            validate_yolo_segmentation_dataset(dataset_dir)
+
+    def test_no_wound_export_appends_after_existing_split_names(self):
+        with TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "dataset"
+            self._write_existing_dataset_item(dataset_dir, "train", "train_img00005")
+            self._write_existing_dataset_item(dataset_dir, "val", "val_img00003")
+            frames = np.zeros((3, 20, 30, 3), dtype=np.uint8)
+
+            stats = export_no_wound_frames_to_yolo_dataset(
+                frames=frames,
+                output_dir=dataset_dir,
+            )
+
+            self.assertEqual((stats.train_images, stats.val_images), (2, 1))
+            self.assertTrue((dataset_dir / "images" / "train" / "train_img00006.jpg").exists())
+            self.assertTrue((dataset_dir / "labels" / "train" / "train_img00006.txt").exists())
+            self.assertTrue((dataset_dir / "images" / "train" / "train_img00007.jpg").exists())
+            self.assertTrue((dataset_dir / "images" / "val" / "val_img00004.jpg").exists())
+            self.assertEqual(
+                (dataset_dir / "labels" / "val" / "val_img00004.txt").read_bytes(),
+                b"",
+            )
+
+    def test_validator_accepts_mixed_polygon_and_empty_labels(self):
+        with TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "dataset"
+            self._write_existing_dataset_item(dataset_dir, "train", "train_img00001")
+            self._write_existing_dataset_item(dataset_dir, "val", "val_img00001")
+            (dataset_dir / "labels" / "val" / "val_img00001.txt").write_bytes(b"")
+
+            validate_yolo_segmentation_dataset(dataset_dir)
+
+    def test_no_wound_export_rolls_back_the_whole_batch_on_failure(self):
+        with TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "dataset"
+            frames = [
+                np.zeros((20, 30, 3), dtype=np.uint8),
+                np.zeros((20, 30, 3), dtype=np.uint8),
+                np.zeros((10,), dtype=np.uint8),
+            ]
+
+            with self.assertRaisesRegex(ValueError, "grayscale, RGB, or RGBA"):
+                export_no_wound_frames_to_yolo_dataset(frames, dataset_dir)
+
+            self.assertEqual(list((dataset_dir / "images").glob("**/*.jpg")), [])
+            self.assertEqual(list((dataset_dir / "labels").glob("**/*.txt")), [])
+            self.assertFalse((dataset_dir / "dataset.yaml").exists())
+
+    def test_concurrent_no_wound_exports_allocate_unique_names(self):
+        with TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "dataset"
+            frames = np.zeros((5, 20, 30, 3), dtype=np.uint8)
+            errors = []
+            original_next_index = yolo_exporter._next_split_image_index
+
+            def delayed_next_index(*args, **kwargs):
+                next_index = original_next_index(*args, **kwargs)
+                time.sleep(0.05)
+                return next_index
+
+            def export_frames():
+                try:
+                    export_no_wound_frames_to_yolo_dataset(frames, dataset_dir)
+                except Exception as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            with patch.object(
+                yolo_exporter,
+                "_next_split_image_index",
+                side_effect=delayed_next_index,
+            ):
+                workers = [threading.Thread(target=export_frames) for _ in range(2)]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join(timeout=5)
+
+            self.assertEqual(errors, [])
+            self.assertTrue(all(not worker.is_alive() for worker in workers))
+            self.assertEqual(len(list((dataset_dir / "images" / "train").glob("*.jpg"))), 8)
+            self.assertEqual(len(list((dataset_dir / "labels" / "train").glob("*.txt"))), 8)
+            self.assertEqual(len(list((dataset_dir / "images" / "val").glob("*.jpg"))), 2)
+            self.assertEqual(len(list((dataset_dir / "labels" / "val").glob("*.txt"))), 2)
+
+    def test_mask_and_no_wound_exports_share_the_dataset_lock(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            raw_root = root / "raw-mask-data"
+            dataset_dir = root / "dataset"
+            self._write_sample_raw_mask_data(raw_root)
+            frames = np.zeros((5, 20, 30, 3), dtype=np.uint8)
+            errors = []
+            original_next_index = yolo_exporter._next_split_image_index
+
+            def delayed_next_index(*args, **kwargs):
+                next_index = original_next_index(*args, **kwargs)
+                time.sleep(0.05)
+                return next_index
+
+            def export_masks():
+                try:
+                    export_yolo_segmentation_dataset(
+                        raw_mask_root=raw_root,
+                        output_dir=dataset_dir,
+                        min_area_px=6,
+                        approx_epsilon=1.0,
+                    )
+                except Exception as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            def export_empty_frames():
+                try:
+                    export_no_wound_frames_to_yolo_dataset(frames, dataset_dir)
+                except Exception as exc:  # pragma: no cover - asserted below
+                    errors.append(exc)
+
+            with patch.object(
+                yolo_exporter,
+                "_next_split_image_index",
+                side_effect=delayed_next_index,
+            ):
+                workers = [
+                    threading.Thread(target=export_masks),
+                    threading.Thread(target=export_empty_frames),
+                ]
+                for worker in workers:
+                    worker.start()
+                for worker in workers:
+                    worker.join(timeout=5)
+
+            self.assertEqual(errors, [])
+            self.assertTrue(all(not worker.is_alive() for worker in workers))
+            self.assertEqual(len(list((dataset_dir / "images" / "train").glob("*.jpg"))), 7)
+            self.assertEqual(len(list((dataset_dir / "labels" / "train").glob("*.txt"))), 7)
+            self.assertEqual(len(list((dataset_dir / "images" / "val").glob("*.jpg"))), 2)
+            self.assertEqual(len(list((dataset_dir / "labels" / "val").glob("*.txt"))), 2)
 
 
 if __name__ == "__main__":
