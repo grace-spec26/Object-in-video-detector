@@ -194,6 +194,100 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("return prompt_preview", preview_fn)
         self.assertNotIn("runtime = get_sam_preview_runtime(sam_model)", preview_fn)
 
+    def test_sam_image_model_dropdowns_show_loading_progress_above_preview(self):
+        app_source = APP_PATH.read_text()
+        second_step_block = app_source.split("## Third step:", maxsplit=1)[0]
+        third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
+
+        self.assertIn("sam_model_loading_progress = gr.HTML", second_step_block)
+        self.assertLess(
+            second_step_block.index("sam_model_dropdown = gr.Dropdown"),
+            second_step_block.index("sam_model_loading_progress = gr.HTML"),
+        )
+        self.assertLess(
+            second_step_block.index("sam_model_loading_progress = gr.HTML"),
+            second_step_block.index("sam_preview_image = gr.Image"),
+        )
+
+        self.assertIn("processed_sam_model_loading_progress = gr.HTML", third_step_block)
+        self.assertLess(
+            third_step_block.index("processed_sam_model_dropdown = gr.Dropdown"),
+            third_step_block.index("processed_sam_model_loading_progress = gr.HTML"),
+        )
+        self.assertLess(
+            third_step_block.index("processed_sam_model_loading_progress = gr.HTML"),
+            third_step_block.index("processed_sam_preview_image = gr.Image"),
+        )
+
+    def test_sam_image_model_dropdowns_stream_loading_progress_on_change(self):
+        app_source = APP_PATH.read_text()
+        single_frame_change = re.search(
+            r"sam_model_dropdown\.change\((.*?)\n\s*\)",
+            app_source,
+            re.DOTALL,
+        )
+        processed_change = re.search(
+            r"processed_sam_model_dropdown\.change\((.*?)\n\s*\)",
+            app_source,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(single_frame_change)
+        self.assertIsNotNone(processed_change)
+        self.assertIn("fn = stream_sam_model_loading_progress", single_frame_change.group(1))
+        self.assertIn("sam_model_loading_progress", single_frame_change.group(1))
+        self.assertIn("queue = True", single_frame_change.group(1))
+        self.assertIn("fn = stream_sam_model_loading_progress", processed_change.group(1))
+        self.assertIn("processed_sam_model_loading_progress", processed_change.group(1))
+        self.assertIn("queue = True", processed_change.group(1))
+
+    def test_submit_track_and_reprocess_update_sam_model_progress_bars(self):
+        app_source = APP_PATH.read_text()
+        submit = re.search(r"submit\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        track = re.search(r"track_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        reprocess = re.search(r"reprocess_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(submit)
+        self.assertIsNotNone(track)
+        self.assertIsNotNone(reprocess)
+        self.assertIn("sam_model_loading_progress", submit.group(1))
+        self.assertIn("processed_sam_model_loading_progress", submit.group(1))
+        self.assertIn("processed_sam_model_loading_progress", track.group(1))
+        self.assertIn("processed_sam_model_loading_progress", reprocess.group(1))
+        self.assertIn("current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL)", app_source)
+
+    def test_sam_preview_clicks_refresh_model_loading_progress_bar(self):
+        app_source = APP_PATH.read_text()
+        single_preview = re.search(r"sam_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        processed_preview = re.search(
+            r"processed_sam_preview_button\.click\((.*?)\n\s*\)",
+            app_source,
+            re.DOTALL,
+        )
+
+        self.assertIsNotNone(single_preview)
+        self.assertIsNotNone(processed_preview)
+        self.assertIn("fn = preview_sam_on_frame_with_progress", single_preview.group(1))
+        self.assertIn("sam_model_loading_progress", single_preview.group(1))
+        self.assertIn("export_status", single_preview.group(1))
+        self.assertIn("fn = preview_sam_for_selected_frame_with_progress", processed_preview.group(1))
+        self.assertIn("processed_sam_model_loading_progress", processed_preview.group(1))
+        self.assertIn("export_status", processed_preview.group(1))
+
+    def test_export_status_is_under_processed_sam_preview_on_right_side(self):
+        app_source = APP_PATH.read_text()
+        third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
+
+        self.assertIn("export_status = gr.Textbox", third_step_block)
+        self.assertLess(
+            third_step_block.index("processed_sam_preview_image = gr.Image"),
+            third_step_block.index("export_status = gr.Textbox"),
+        )
+        self.assertLess(
+            third_step_block.index("export_status = gr.Textbox"),
+            third_step_block.index("processed_sam_video_skip_frames = gr.Number"),
+        )
+
     def test_lock_busy_sam_preview_prequeues_requested_model(self):
         app_source = APP_PATH.read_text()
         runtime_fn = app_source.split("def get_sam_preview_runtime_if_ready", maxsplit=1)[1]
@@ -297,6 +391,7 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("fn = reprocess_with_refinements", match.group(1))
         self.assertIn("query_points", match.group(1))
         self.assertIn("refinement_query_points", match.group(1))
+        self.assertIn("processed_sam_model_dropdown", match.group(1))
         self.assertIn("tracked_video_preview", match.group(1))
         self.assertIn("tracked_frame_preview", match.group(1))
         self.assertIn("tracked_prompt_sources", match.group(1))

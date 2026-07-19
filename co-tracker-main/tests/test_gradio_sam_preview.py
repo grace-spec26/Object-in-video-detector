@@ -1,5 +1,6 @@
 import os
 import sys
+import tempfile
 import threading
 import unittest
 from pathlib import Path
@@ -150,6 +151,44 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertEqual(preview[20, 50].tolist(), [0, 255, 0])
         self.assertIn("point_coords=[[50.0, 20.0], [140.0, 40.0]]", status)
         self.assertIn("point_labels=[1, 0]", status)
+
+    def test_sam_model_progress_reports_checkpoint_download_percentage(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "sam2.1_hiera_small.pt"
+            temporary_checkpoint = checkpoint.with_suffix(checkpoint.suffix + ".download")
+            temporary_checkpoint.write_bytes(b"x" * 25)
+            model_option = {
+                "label": "SAM2.1 Hiera Small",
+                "checkpoint": checkpoint,
+                "expected_size": 100,
+            }
+
+            with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+                percent, message = app.sam_model_checkpoint_download_progress(
+                    "sam2.1_hiera_small.pt"
+                )
+
+        self.assertEqual(percent, 25)
+        self.assertIn("Downloading SAM2.1 Hiera Small", message)
+        self.assertIn("25/100 bytes", message)
+
+    def test_sam_model_progress_marks_loaded_runtime_complete(self):
+        model_name = "sam2.1_hiera_small.pt"
+        with app.sam_preview_runtime_lock:
+            original_runtimes = dict(app.sam_preview_runtimes)
+            app.sam_preview_runtimes[model_name] = {
+                "model_label": "SAM2.1 Hiera Small",
+                "device": "cpu",
+            }
+        try:
+            progress_html = app.current_sam_model_progress_html(model_name)
+        finally:
+            with app.sam_preview_runtime_lock:
+                app.sam_preview_runtimes.clear()
+                app.sam_preview_runtimes.update(original_runtimes)
+
+        self.assertIn("SAM2.1 Hiera Small loaded", progress_html)
+        self.assertIn("100%", progress_html)
 
     def test_processed_preview_scales_refinement_points_from_tracked_preview_space(self):
         video_frames = np.zeros((2, 100, 200, 3), dtype=np.uint8)

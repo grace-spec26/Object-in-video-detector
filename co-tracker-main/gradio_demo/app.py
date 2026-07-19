@@ -9,10 +9,12 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
 import hashlib
+import html
 import importlib.metadata as importlib_metadata
 from contextlib import contextmanager
 import sys
 import threading
+import time
 import uuid
 from pathlib import Path
 
@@ -334,6 +336,16 @@ SAM_VIDEO_PROGRESS_READY = """
   </div>
 </div>
 """
+SAM_MODEL_PROGRESS_READY = """
+<div style="width: 100%; padding: 6px 0;">
+  <div style="display: flex; justify-content: space-between; font-size: 13px; color: #667085; margin-bottom: 4px;">
+    <span>SAM image model not loaded</span><span>0%</span>
+  </div>
+  <div style="height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden;">
+    <div style="height: 100%; width: 0%; background: #2563eb;"></div>
+  </div>
+</div>
+"""
 POINT_ADD_MODE = "Add"
 POINT_DELETE_NEAREST_MODE = "Delete nearest"
 POINT_EDIT_MODE_CHOICES = (POINT_ADD_MODE, POINT_DELETE_NEAREST_MODE)
@@ -357,6 +369,122 @@ sam_preview_runtimes = {}
 sam_preview_preload_lock = threading.Lock()
 sam_preview_preload_started = set()
 sam_preview_preload_errors = {}
+
+
+def format_sam_model_progress_html(percent, message, color="#2563eb"):
+    bounded_percent = int(np.clip(int(round(float(percent))), 0, 100))
+    safe_message = html.escape(str(message))
+    safe_color = html.escape(str(color))
+    return f"""
+<div style="width: 100%; padding: 6px 0;">
+  <div style="display: flex; justify-content: space-between; font-size: 13px; color: #344054; margin-bottom: 4px;">
+    <span>{safe_message}</span><span>{bounded_percent}%</span>
+  </div>
+  <div style="height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden;">
+    <div style="height: 100%; width: {bounded_percent}%; background: {safe_color};"></div>
+  </div>
+</div>
+"""
+
+
+def resolve_sam_preview_model_option(model_name):
+    if str(MOBILE_SAM_ROOT) not in sys.path:
+        sys.path.insert(0, str(MOBILE_SAM_ROOT))
+
+    from sam2_coordinate_wrapper import resolve_sam2_model_option
+
+    return resolve_sam2_model_option(model_name)
+
+
+def sam_model_checkpoint_download_progress(model_name):
+    model_option = resolve_sam_preview_model_option(model_name)
+    model_label = model_option.get("label", str(model_name))
+    checkpoint_path = Path(model_option["checkpoint"])
+    temporary_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".download")
+    expected_size = int(model_option.get("expected_size") or 0)
+
+    if checkpoint_path.exists():
+        checkpoint_size = checkpoint_path.stat().st_size
+        if expected_size > 0 and checkpoint_size < expected_size:
+            percent = int(round((checkpoint_size / expected_size) * 100))
+            return percent, f"{model_label} checkpoint is incomplete: {checkpoint_size}/{expected_size} bytes"
+        return 100, f"{model_label} checkpoint downloaded"
+
+    if temporary_path.exists():
+        downloaded_size = temporary_path.stat().st_size
+        if expected_size > 0:
+            percent = int(round((downloaded_size / expected_size) * 100))
+            return percent, f"Downloading {model_label}: {downloaded_size}/{expected_size} bytes"
+        return 0, f"Downloading {model_label}: {downloaded_size} bytes"
+
+    return 0, f"{model_label} checkpoint waiting to download"
+
+
+def current_sam_model_progress_html(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    if model_name not in SAM_IMAGE_MODEL_CHOICES:
+        return format_sam_model_progress_html(0, f"Unknown SAM image model: {model_name}", "#dc2626")
+
+    with sam_preview_runtime_lock:
+        runtime = sam_preview_runtimes.get(model_name)
+        if runtime is not None:
+            return format_sam_model_progress_html(
+                100,
+                f"{runtime['model_label']} loaded on {runtime['device']}",
+            )
+
+    with sam_preview_preload_lock:
+        previous_error = sam_preview_preload_errors.get(model_name)
+        is_loading = model_name in sam_preview_preload_started
+
+    if previous_error and not is_loading:
+        return format_sam_model_progress_html(
+            100,
+            f"SAM image model {model_name} failed to load: {previous_error}",
+            "#dc2626",
+        )
+
+    try:
+        percent, message = sam_model_checkpoint_download_progress(model_name)
+    except Exception as exc:
+        return format_sam_model_progress_html(
+            0,
+            f"SAM image model {model_name} progress unavailable: {exc}",
+            "#dc2626",
+        )
+
+    if is_loading and percent >= 100:
+        try:
+            model_label = resolve_sam_preview_model_option(model_name).get("label", model_name)
+        except Exception:
+            model_label = model_name
+        message = f"{model_label} checkpoint ready; loading model runtime"
+    elif is_loading and percent == 0:
+        try:
+            model_label = resolve_sam_preview_model_option(model_name).get("label", model_name)
+        except Exception:
+            model_label = model_name
+        message = f"Preparing {model_label} download or model load"
+
+    return format_sam_model_progress_html(percent, message)
+
+
+def stream_sam_model_loading_progress(sam_model):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    start_sam_preview_preload(model_name)
+
+    while True:
+        yield current_sam_model_progress_html(model_name)
+
+        with sam_preview_runtime_lock:
+            is_loaded = model_name in sam_preview_runtimes
+        with sam_preview_preload_lock:
+            has_error = model_name in sam_preview_preload_errors
+            is_loading = model_name in sam_preview_preload_started
+
+        if is_loaded or (has_error and not is_loading):
+            return
+        time.sleep(1)
 
 
 def point_label_from_choice(point_type):
@@ -1070,9 +1198,11 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         [],
         gr.update(interactive=True),
         gr.update(interactive=False),
+        current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=False),
         None,
         gr.update(interactive=False),
+        current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=False),
         None,
         gr.update(value=0, interactive=False),
@@ -1211,6 +1341,7 @@ def track(
         painted_video[0],
         gr.update(interactive=True),
         gr.update(interactive=has_selected_points),
+        current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=has_selected_points),
         gr.update(value=0, interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
@@ -1256,6 +1387,7 @@ def reprocess_with_refinements(
     query_points_color,
     refinement_query_points,
     tracked_frame_num,
+    processed_sam_model=DEFAULT_SAM_IMAGE_MODEL,
 ):
     if video_preview is None or video_input is None:
         message = "Track a video before re-processing refinement points."
@@ -1328,7 +1460,8 @@ def reprocess_with_refinements(
         refinement_query_points,
         tracked_prompt_sources,
     )
-    result[10] = gr.update(interactive=True)
+    result[9] = current_sam_model_progress_html(processed_sam_model)
+    result[11] = gr.update(interactive=True)
     result[-1] = (
         f"Re-processing complete with {merged_query_count} point prompt(s). "
         "Query points on video has been replaced."
@@ -1768,6 +1901,60 @@ def preview_sam_for_selected_frame(
     )
 
 
+def preview_sam_on_frame_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    frame_num,
+    sam_model,
+):
+    preview, status = preview_sam_on_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_num,
+        sam_model,
+    )
+    return preview, current_sam_model_progress_html(sam_model), status
+
+
+def preview_sam_for_selected_frame_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
+    preview, status = preview_sam_for_selected_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        query_frame_num,
+        tracked_frame_num,
+        tracked_video_preview,
+        sam_model,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+    )
+    return preview, current_sam_model_progress_html(sam_model), status
+
+
 def preview_sam_video_for_processed_frames(
     video_frames,
     video_preview_array,
@@ -2078,21 +2265,19 @@ with gr.Blocks() as demo:
                 loop=True,
             )
             no_wound_export_button = gr.Button("Export No-Wound Frames to YOLO", interactive=False)
-            export_status = gr.Textbox(
-                label="Export Status",
-                interactive=False,
-                lines=3,
-            )
 
         with gr.Column():
-            with gr.Row():
-                sam_model_dropdown = gr.Dropdown(
-                    choices=list(SAM_IMAGE_MODEL_CHOICES),
-                    value=DEFAULT_SAM_IMAGE_MODEL,
-                    label="SAM Image Model",
-                    interactive=False,
-                )
-                sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
+            sam_model_dropdown = gr.Dropdown(
+                choices=list(SAM_IMAGE_MODEL_CHOICES),
+                value=DEFAULT_SAM_IMAGE_MODEL,
+                label="SAM Image Model",
+                interactive=False,
+            )
+            sam_model_loading_progress = gr.HTML(
+                value=SAM_MODEL_PROGRESS_READY,
+                show_label=False,
+            )
+            sam_preview_button = gr.Button("Preview SAM on Current Frame", interactive=False)
             sam_preview_image = gr.Image(
                 label="SAM point preview",
                 type="numpy",
@@ -2140,11 +2325,20 @@ with gr.Blocks() as demo:
                 label="SAM Image Model",
                 interactive=False,
             )
+            processed_sam_model_loading_progress = gr.HTML(
+                value=SAM_MODEL_PROGRESS_READY,
+                show_label=False,
+            )
             processed_sam_preview_button = gr.Button("Preview SAM on Selected Frame", interactive=False)
             processed_sam_preview_image = gr.Image(
                 label="SAM point preview",
                 type="numpy",
                 interactive=False,
+            )
+            export_status = gr.Textbox(
+                label="Export Status",
+                interactive=False,
+                lines=3,
             )
             processed_sam_video_skip_frames = gr.Number(
                 value=0,
@@ -2214,9 +2408,11 @@ with gr.Blocks() as demo:
             tracked_prompt_sources,
             no_wound_export_button,
             sam_model_dropdown,
+            sam_model_loading_progress,
             sam_preview_button,
             sam_preview_image,
             processed_sam_model_dropdown,
+            processed_sam_model_loading_progress,
             processed_sam_preview_button,
             processed_sam_preview_image,
             processed_sam_video_skip_frames,
@@ -2249,6 +2445,28 @@ with gr.Blocks() as demo:
             tracked_frame_preview,
         ],
         queue = False
+    )
+
+    sam_model_dropdown.change(
+        fn = stream_sam_model_loading_progress,
+        inputs = [
+            sam_model_dropdown,
+        ],
+        outputs = [
+            sam_model_loading_progress,
+        ],
+        queue = True,
+    )
+
+    processed_sam_model_dropdown.change(
+        fn = stream_sam_model_loading_progress,
+        inputs = [
+            processed_sam_model_dropdown,
+        ],
+        outputs = [
+            processed_sam_model_loading_progress,
+        ],
+        queue = True,
     )
 
     current_frame.select(
@@ -2355,6 +2573,7 @@ with gr.Blocks() as demo:
             reprocess_button,
             no_wound_export_button,
             processed_sam_model_dropdown,
+            processed_sam_model_loading_progress,
             processed_sam_preview_button,
             processed_sam_video_skip_frames,
             processed_sam_video_button,
@@ -2460,6 +2679,7 @@ with gr.Blocks() as demo:
             query_points_color,
             refinement_query_points,
             tracked_query_frames,
+            processed_sam_model_dropdown,
         ],
         outputs = [
             output_video,
@@ -2472,6 +2692,7 @@ with gr.Blocks() as demo:
             tracked_frame_preview,
             no_wound_export_button,
             processed_sam_model_dropdown,
+            processed_sam_model_loading_progress,
             processed_sam_preview_button,
             processed_sam_video_skip_frames,
             processed_sam_video_button,
@@ -2494,7 +2715,7 @@ with gr.Blocks() as demo:
     )
 
     sam_preview_button.click(
-        fn = preview_sam_on_frame,
+        fn = preview_sam_on_frame_with_progress,
         inputs = [
             video,
             video_preview,
@@ -2507,13 +2728,14 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             sam_preview_image,
+            sam_model_loading_progress,
             export_status,
         ],
         queue = False,
     )
 
     processed_sam_preview_button.click(
-        fn = preview_sam_for_selected_frame,
+        fn = preview_sam_for_selected_frame_with_progress,
         inputs = [
             video,
             video_preview,
@@ -2530,6 +2752,7 @@ with gr.Blocks() as demo:
         ],
         outputs = [
             processed_sam_preview_image,
+            processed_sam_model_loading_progress,
             export_status,
         ],
         queue = False,
