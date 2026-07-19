@@ -93,6 +93,9 @@ with mock.patch.dict(
     import app  # noqa: E402
 
 
+sam_preview_service = app.sam_preview_service
+
+
 class FakeSamPredictor:
     def __init__(self, masks=None, scores=None):
         self.image = None
@@ -146,7 +149,7 @@ class GradioSamPreviewTest(unittest.TestCase):
             "image_cache_key": None,
         }
 
-        with mock.patch.object(app, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
             _, status = app.preview_sam_on_frame(
                 video_frames,
                 video_preview,
@@ -188,7 +191,7 @@ class GradioSamPreviewTest(unittest.TestCase):
             "image_cache_key": None,
         }
 
-        with mock.patch.object(app, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
             preview, _ = app.preview_sam_on_frame(
                 video_frames,
                 video_preview,
@@ -207,7 +210,7 @@ class GradioSamPreviewTest(unittest.TestCase):
         video_frames, video_preview, query_points = self._sample_video()
 
         with mock.patch.object(
-            app,
+            sam_preview_service,
             "get_sam_preview_runtime_if_ready",
             return_value=(None, "SAM preview model sam2.1_hiera_small.pt is still loading."),
         ):
@@ -237,7 +240,7 @@ class GradioSamPreviewTest(unittest.TestCase):
                 "expected_size": 100,
             }
 
-            with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+            with mock.patch.object(sam_preview_service, "resolve_sam_preview_model_option", return_value=model_option):
                 percent, message = app.sam_model_checkpoint_download_progress(
                     "sam2.1_hiera_small.pt"
                 )
@@ -260,7 +263,7 @@ class GradioSamPreviewTest(unittest.TestCase):
                 "expected_size": 100,
             }
 
-            with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+            with mock.patch.object(sam_preview_service, "resolve_sam_preview_model_option", return_value=model_option):
                 percent, message = app.sam_model_checkpoint_download_progress(
                     "sam2.1_hiera_large.pt"
                 )
@@ -283,9 +286,9 @@ class GradioSamPreviewTest(unittest.TestCase):
             def fake_unavailable(path):
                 return Path(path).name.endswith(".download")
 
-            with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+            with mock.patch.object(sam_preview_service, "resolve_sam_preview_model_option", return_value=model_option):
                 with mock.patch.object(
-                    app,
+                    sam_preview_service,
                     "sam_checkpoint_file_looks_unavailable",
                     side_effect=fake_unavailable,
                 ):
@@ -316,7 +319,7 @@ class GradioSamPreviewTest(unittest.TestCase):
                 app.sam_preview_preload_errors[model_name] = "curl exited with status 56"
                 app.sam_preview_preload_started.discard(model_name)
             try:
-                with mock.patch.object(app, "resolve_sam_preview_model_option", return_value=model_option):
+                with mock.patch.object(sam_preview_service, "resolve_sam_preview_model_option", return_value=model_option):
                     progress_html = app.current_sam_model_progress_html(model_name)
             finally:
                 with app.sam_preview_preload_lock:
@@ -368,7 +371,7 @@ class GradioSamPreviewTest(unittest.TestCase):
             "image_cache_key": None,
         }
 
-        with mock.patch.object(app, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
             _, status = app.preview_sam_for_selected_frame(
                 video_frames,
                 video_preview,
@@ -423,8 +426,8 @@ class GradioSamPreviewTest(unittest.TestCase):
             written["frames"] = np.asarray(frames)
             written["fps"] = fps
 
-        with mock.patch.object(app, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
-            app.mediapy,
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
+            sam_preview_service.mediapy,
             "write_video",
             side_effect=fake_write_video,
         ):
@@ -466,8 +469,8 @@ class GradioSamPreviewTest(unittest.TestCase):
         }
         write_video = mock.Mock()
 
-        with mock.patch.object(app, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
-            app.mediapy,
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
+            sam_preview_service.mediapy,
             "write_video",
             side_effect=write_video,
         ):
