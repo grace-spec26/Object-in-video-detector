@@ -464,6 +464,48 @@ def selected_sam_video_frame_indices(frame_count, skip_count):
     ]
 
 
+def parse_sam_video_skip_count(value):
+    if value is None:
+        return 0
+    if isinstance(value, str) and not value.strip():
+        return 0
+
+    try:
+        numeric_value = float(value)
+    except (TypeError, ValueError):
+        return parse_frame_skip_count(value)
+    if numeric_value < 0:
+        raise ValueError("Skip frame count must be non-negative. Use 0 to keep every frame.")
+    return parse_frame_skip_count(value)
+
+
+def prepare_sam_video_preview(video_frames, sam_video_skip_frames):
+    if video_frames is None:
+        message = "Submit and track a video before running SAM video review."
+        gr.Warning(message, duration=5)
+        return SAM_VIDEO_PROGRESS_READY, None, message
+
+    try:
+        skip_count = parse_sam_video_skip_count(sam_video_skip_frames)
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+
+    frame_count = len(video_frames)
+    selected_frame_count = len(selected_sam_video_frame_indices(frame_count, skip_count))
+    return (
+        format_sam_video_progress_html(
+            0,
+            selected_frame_count,
+            f"Preparing SAM video preview for 0/{selected_frame_count} selected frame(s)",
+        ),
+        None,
+        (
+            f"Preparing SAM video preview for {selected_frame_count} selected frame(s) "
+            f"from {frame_count} total video frame(s)."
+        ),
+    )
+
+
 def wait_for_sam_video_runtime(sam_model, selected_frame_count, frame_count):
     model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
     runtime = get_loaded_sam_preview_runtime(model_name, blocking=False)
@@ -781,7 +823,7 @@ def preview_sam_video_for_processed_frames(
         return
 
     try:
-        skip_count = parse_frame_skip_count(sam_video_skip_frames)
+        skip_count = parse_sam_video_skip_count(sam_video_skip_frames)
     except ValueError as exc:
         raise gr.Error(str(exc)) from exc
 
@@ -805,7 +847,6 @@ def preview_sam_video_for_processed_frames(
     if runtime is None:
         return
 
-    predictor = runtime["predictor"]
     review_frames = []
     processed_count = 0
     skipped_by_frame_skip = max(0, frame_count - selected_frame_count)
@@ -883,13 +924,22 @@ def preview_sam_video_for_processed_frames(
             )
             continue
 
-        predictor.set_image(frame)
-        masks, scores, _ = predictor.predict(
-            point_coords=point_coords.astype(np.float32),
-            point_labels=point_labels.astype(np.int32),
-            multimask_output=True,
-            normalize_coords=True,
-        )
+        try:
+            masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
+        except Exception as exc:
+            message = (
+                f"SAM video review failed while predicting video frame {frame_index + 1}/{frame_count}: {exc}"
+            )
+            yield (
+                format_sam_video_progress_html(
+                    selected_index - 1,
+                    selected_frame_count,
+                    f"SAM prediction failed at selected frame {selected_index}/{selected_frame_count}",
+                ),
+                None,
+                message,
+            )
+            raise gr.Error(message) from exc
         best_mask = masks[select_sam_preview_mask(masks, scores, point_coords, point_labels)]
         review_frames.append(draw_sam_preview(frame, best_mask, point_coords, point_labels))
         processed_count += 1
@@ -934,7 +984,20 @@ def preview_sam_video_for_processed_frames(
     output_fps = float(video_fps or 24)
     if output_fps <= 0:
         output_fps = 24
-    mediapy.write_video(video_file_path, np.asarray(review_frames), fps=output_fps)
+    try:
+        mediapy.write_video(video_file_path, np.asarray(review_frames), fps=output_fps)
+    except Exception as exc:
+        message = f"SAM video review failed while encoding preview video: {exc}"
+        yield (
+            format_sam_video_progress_html(
+                selected_frame_count,
+                selected_frame_count,
+                "SAM video review encoding failed",
+            ),
+            None,
+            message,
+        )
+        raise gr.Error(message) from exc
 
     yield (
         format_sam_video_progress_html(selected_frame_count, selected_frame_count, "SAM video review complete"),

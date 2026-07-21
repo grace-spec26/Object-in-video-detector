@@ -31,6 +31,9 @@ class DummyGradioComponent:
     def click(self, *args, **kwargs):
         return self
 
+    def then(self, *args, **kwargs):
+        return self
+
     def change(self, *args, **kwargs):
         return self
 
@@ -126,6 +129,30 @@ class FakeSamPredictor:
 
 
 class GradioSamPreviewTest(unittest.TestCase):
+    def test_prepare_processed_video_review_reads_skip_and_reports_selected_frames(self):
+        video_frames = np.zeros((10, 20, 40, 3), dtype=np.uint8)
+
+        progress_html, video_path, status = app.prepare_sam_video_preview(video_frames, 2)
+
+        self.assertIn("Preparing SAM video preview", progress_html)
+        self.assertIn("0/4 selected frame(s)", progress_html)
+        self.assertIsNone(video_path)
+        self.assertIn("4 selected frame(s)", status)
+        self.assertIn("from 10 total video frame(s)", status)
+
+    def test_prepare_processed_video_review_reports_missing_video_state(self):
+        progress_html, video_path, status = app.prepare_sam_video_preview(None, 0)
+
+        self.assertEqual(progress_html, app.SAM_VIDEO_PROGRESS_READY)
+        self.assertIsNone(video_path)
+        self.assertIn("Submit and track a video", status)
+
+    def test_prepare_processed_video_review_rejects_negative_skip_value(self):
+        with self.assertRaises(RuntimeError) as raised:
+            app.prepare_sam_video_preview(np.zeros((2, 20, 40, 3), dtype=np.uint8), -1)
+
+        self.assertIn("non-negative", str(raised.exception))
+
     def _sample_video(self):
         video_frames = np.zeros((2, 100, 200, 3), dtype=np.uint8)
         video_preview = np.zeros((2, 50, 100, 3), dtype=np.uint8)
@@ -566,6 +593,79 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("2/2 selected frame(s)", status)
         self.assertIn("from 4 total video frame(s)", status)
 
+    def test_processed_video_review_uses_shared_prediction_helper_and_original_fps_for_skip_two(self):
+        video_frames = np.zeros((10, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((10, 10, 20, 3), dtype=np.uint8)
+        selected_tracks = np.asarray(
+            [[[float(frame_index + 1), 5.0] for frame_index in range(10)]],
+            dtype=np.float32,
+        )
+        runtime = {
+            "predictor": FakeSamPredictor(),
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+        calls = []
+        written = {}
+
+        def fake_predict(runtime_arg, frame, point_coords, point_labels):
+            calls.append(
+                {
+                    "runtime": runtime_arg,
+                    "frame": np.asarray(frame).copy(),
+                    "point_coords": np.asarray(point_coords).copy(),
+                    "point_labels": np.asarray(point_labels).copy(),
+                }
+            )
+            mask = np.zeros((20, 40), dtype=bool)
+            mask[1:5, 1:5] = True
+            return np.asarray([mask]), np.asarray([0.9], dtype=np.float32), None
+
+        def fake_write_video(path, frames, fps):
+            written["path"] = path
+            written["frames"] = np.asarray(frames)
+            written["fps"] = fps
+
+        with mock.patch.object(
+            sam_preview_service,
+            "get_loaded_sam_preview_runtime",
+            return_value=runtime,
+        ), mock.patch.object(
+            sam_preview_service,
+            "predict_sam_preview_mask",
+            side_effect=fake_predict,
+        ), mock.patch.object(
+            sam_preview_service.mediapy,
+            "write_video",
+            side_effect=fake_write_video,
+        ):
+            results = list(
+                app.preview_sam_video_for_processed_frames(
+                    video_frames,
+                    video_preview,
+                    [[] for _ in range(10)],
+                    selected_tracks,
+                    np.ones((1, 10), dtype=bool),
+                    [1],
+                    video_preview.copy(),
+                    24,
+                    "sam2.1_hiera_small.pt",
+                    2,
+                    [[] for _ in range(10)],
+                    [],
+                )
+            )
+
+        self.assertEqual([call["point_coords"][0, 0] for call in calls], [2.0, 8.0, 14.0, 20.0])
+        self.assertTrue(all(call["runtime"] is runtime for call in calls))
+        self.assertEqual(written["frames"].shape[0], 4)
+        self.assertEqual(written["fps"], 24.0)
+        self.assertEqual(results[-1][1], written["path"])
+        self.assertIn("4/4 selected frame(s)", results[-1][2])
+        self.assertEqual(len(runtime["predictor"].predict_calls), 0)
+
     def test_processed_video_review_yields_processing_status_before_running_sam(self):
         video_frames = np.zeros((4, 20, 40, 3), dtype=np.uint8)
         video_preview = np.zeros((4, 10, 20, 3), dtype=np.uint8)
@@ -733,6 +833,84 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIsNone(video_path)
         self.assertIn("No SAM-processed frames", status)
         write_video.assert_not_called()
+
+    def test_processed_video_review_surfaces_prediction_errors(self):
+        video_frames = np.zeros((1, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((1, 10, 20, 3), dtype=np.uint8)
+        runtime = {
+            "predictor": FakeSamPredictor(),
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+
+        with mock.patch.object(
+            sam_preview_service,
+            "get_loaded_sam_preview_runtime",
+            return_value=runtime,
+        ), mock.patch.object(
+            sam_preview_service,
+            "predict_sam_preview_mask",
+            side_effect=ValueError("predict failed"),
+        ):
+            generator = app.preview_sam_video_for_processed_frames(
+                video_frames,
+                video_preview,
+                [[]],
+                np.asarray([[[5.0, 5.0]]], dtype=np.float32),
+                np.ones((1, 1), dtype=bool),
+                [1],
+                video_preview.copy(),
+                24,
+                "sam2.1_hiera_small.pt",
+                0,
+                [[]],
+                [],
+            )
+            with self.assertRaises(RuntimeError) as raised:
+                list(generator)
+
+        self.assertIn("predict failed", str(raised.exception))
+
+    def test_processed_video_review_surfaces_video_encoding_errors(self):
+        video_frames = np.zeros((1, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((1, 10, 20, 3), dtype=np.uint8)
+        runtime = {
+            "predictor": FakeSamPredictor(),
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+
+        with mock.patch.object(
+            sam_preview_service,
+            "get_loaded_sam_preview_runtime",
+            return_value=runtime,
+        ), mock.patch.object(
+            sam_preview_service.mediapy,
+            "write_video",
+            side_effect=ValueError("encode failed"),
+        ):
+            generator = app.preview_sam_video_for_processed_frames(
+                video_frames,
+                video_preview,
+                [[]],
+                np.asarray([[[5.0, 5.0]]], dtype=np.float32),
+                np.ones((1, 1), dtype=bool),
+                [1],
+                video_preview.copy(),
+                24,
+                "sam2.1_hiera_small.pt",
+                0,
+                [[]],
+                [],
+            )
+            with self.assertRaises(RuntimeError) as raised:
+                list(generator)
+
+        self.assertIn("encode failed", str(raised.exception))
 
 
 if __name__ == "__main__":

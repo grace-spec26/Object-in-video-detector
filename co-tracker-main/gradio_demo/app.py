@@ -110,6 +110,7 @@ try:
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
         preview_sam_on_frame_with_progress,
+        prepare_sam_video_preview,
         preview_sam_video_for_processed_frames,
         resolve_sam_preview_model_option,
         sam_checkpoint_file_looks_unavailable,
@@ -139,6 +140,7 @@ except ImportError:
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
         preview_sam_on_frame_with_progress,
+        prepare_sam_video_preview,
         preview_sam_video_for_processed_frames,
         resolve_sam_preview_model_option,
         sam_checkpoint_file_looks_unavailable,
@@ -1587,7 +1589,21 @@ def configure_demo_callbacks(layout):
         queue = False,
     )
 
-    processed_sam_video_button.click(
+    processed_sam_video_start = processed_sam_video_button.click(
+        fn = prepare_sam_video_preview,
+        inputs = [
+            video,
+            processed_sam_video_skip_frames,
+        ],
+        outputs = [
+            processed_sam_video_progress,
+            processed_sam_video,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    processed_sam_video_start.then(
         fn = preview_sam_video_for_processed_frames,
         inputs = [
             video,
