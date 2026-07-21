@@ -351,6 +351,100 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("SAM2.1 Hiera Small loaded", progress_html)
         self.assertIn("100%", progress_html)
 
+    def test_sam_model_progress_does_not_block_while_runtime_load_holds_lock(self):
+        model_name = "sam2.1_hiera_large.pt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / model_name
+            checkpoint.write_bytes(b"partial")
+            model_option = {
+                "label": "SAM2.1 Hiera Large",
+                "checkpoint": checkpoint,
+                "expected_size": 100,
+            }
+            with app.sam_preview_runtime_lock:
+                with mock.patch.object(
+                    sam_preview_service,
+                    "resolve_sam_preview_model_option",
+                    return_value=model_option,
+                ):
+                    result = []
+                    worker = threading.Thread(
+                        target=lambda: result.append(app.current_sam_model_progress_html(model_name)),
+                    )
+                    worker.start()
+                    worker.join(timeout=0.2)
+                    finished_while_locked = not worker.is_alive()
+
+        if worker.is_alive():
+            worker.join(timeout=1)
+        self.assertTrue(finished_while_locked)
+        self.assertEqual(len(result), 1)
+        self.assertIn("incomplete", result[0])
+
+    def test_sam_model_progress_keeps_placeholder_message_while_loading(self):
+        model_name = "sam2.1_hiera_large.pt"
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / model_name
+            with checkpoint.open("wb") as handle:
+                handle.truncate(100)
+            model_option = {
+                "label": "SAM2.1 Hiera Large",
+                "checkpoint": checkpoint,
+                "expected_size": 100,
+            }
+            with app.sam_preview_preload_lock:
+                original_started = set(app.sam_preview_preload_started)
+                original_errors = dict(app.sam_preview_preload_errors)
+                app.sam_preview_preload_started.add(model_name)
+                app.sam_preview_preload_errors.pop(model_name, None)
+            try:
+                with mock.patch.object(
+                    sam_preview_service,
+                    "resolve_sam_preview_model_option",
+                    return_value=model_option,
+                ):
+                    progress_html = app.current_sam_model_progress_html(model_name)
+            finally:
+                with app.sam_preview_preload_lock:
+                    app.sam_preview_preload_started.clear()
+                    app.sam_preview_preload_started.update(original_started)
+                    app.sam_preview_preload_errors.clear()
+                    app.sam_preview_preload_errors.update(original_errors)
+
+        self.assertIn("local placeholder", progress_html)
+        self.assertNotIn("Preparing SAM2.1 Hiera Large", progress_html)
+
+    def test_get_sam_preview_runtime_loads_without_holding_runtime_lock(self):
+        model_name = "sam2.1_hiera_large.pt"
+        fake_sam2_wrapper = types.ModuleType("sam2_coordinate_wrapper")
+        lock_was_available_during_load = []
+
+        def fake_load_sam2_predictor(model_name, download_checkpoint):
+            acquired = app.sam_preview_runtime_lock.acquire(blocking=False)
+            lock_was_available_during_load.append(acquired)
+            if acquired:
+                app.sam_preview_runtime_lock.release()
+            return object(), "cpu"
+
+        fake_sam2_wrapper.load_sam2_predictor = fake_load_sam2_predictor
+        fake_sam2_wrapper.resolve_sam2_model_option = lambda model_name: {
+            "label": "SAM2.1 Hiera Large",
+        }
+
+        with app.sam_preview_runtime_lock:
+            original_runtimes = dict(app.sam_preview_runtimes)
+            app.sam_preview_runtimes.pop(model_name, None)
+        try:
+            with mock.patch.dict(sys.modules, {"sam2_coordinate_wrapper": fake_sam2_wrapper}):
+                runtime = app.get_sam_preview_runtime(model_name)
+        finally:
+            with app.sam_preview_runtime_lock:
+                app.sam_preview_runtimes.clear()
+                app.sam_preview_runtimes.update(original_runtimes)
+
+        self.assertEqual(lock_was_available_during_load, [True])
+        self.assertEqual(runtime["model_label"], "SAM2.1 Hiera Large")
+
     def test_processed_preview_scales_refinement_points_from_tracked_preview_space(self):
         video_frames = np.zeros((2, 100, 200, 3), dtype=np.uint8)
         video_preview = np.zeros((2, 50, 100, 3), dtype=np.uint8)

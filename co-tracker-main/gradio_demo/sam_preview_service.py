@@ -71,6 +71,17 @@ sam_preview_preload_started = set()
 sam_preview_preload_errors = {}
 
 
+def get_loaded_sam_preview_runtime(model_name, *, blocking=True):
+    acquired = sam_preview_runtime_lock.acquire(blocking=blocking)
+    if not acquired:
+        return None
+
+    try:
+        return sam_preview_runtimes.get(model_name)
+    finally:
+        sam_preview_runtime_lock.release()
+
+
 def format_sam_model_progress_html(percent, message, color="#2563eb"):
     bounded_percent = int(np.clip(int(round(float(percent))), 0, 100))
     safe_message = html.escape(str(message))
@@ -156,13 +167,12 @@ def current_sam_model_progress_html(sam_model):
     if model_name not in SAM_IMAGE_MODEL_CHOICES:
         return format_sam_model_progress_html(0, f"Unknown SAM image model: {model_name}", "#dc2626")
 
-    with sam_preview_runtime_lock:
-        runtime = sam_preview_runtimes.get(model_name)
-        if runtime is not None:
-            return format_sam_model_progress_html(
-                100,
-                f"{runtime['model_label']} loaded on {runtime['device']}",
-            )
+    runtime = get_loaded_sam_preview_runtime(model_name, blocking=False)
+    if runtime is not None:
+        return format_sam_model_progress_html(
+            100,
+            f"{runtime['model_label']} loaded on {runtime['device']}",
+        )
 
     with sam_preview_preload_lock:
         previous_error = sam_preview_preload_errors.get(model_name)
@@ -190,7 +200,7 @@ def current_sam_model_progress_html(sam_model):
         except Exception:
             model_label = model_name
         message = f"{model_label} checkpoint ready; loading model runtime"
-    elif is_loading and percent == 0:
+    elif is_loading and percent == 0 and "local placeholder" not in message and "incomplete" not in message:
         try:
             model_label = resolve_sam_preview_model_option(model_name).get("label", model_name)
         except Exception:
@@ -207,8 +217,7 @@ def stream_sam_model_loading_progress(sam_model):
     while True:
         yield current_sam_model_progress_html(model_name)
 
-        with sam_preview_runtime_lock:
-            is_loaded = model_name in sam_preview_runtimes
+        is_loaded = get_loaded_sam_preview_runtime(model_name, blocking=False) is not None
         with sam_preview_preload_lock:
             has_error = model_name in sam_preview_preload_errors
             is_loading = model_name in sam_preview_preload_started
@@ -232,31 +241,35 @@ def get_sam_preview_runtime(sam_model):
         allowed = ", ".join(SAM_IMAGE_MODEL_CHOICES)
         raise ValueError(f"SAM image model must be one of: {allowed}")
 
-    with sam_preview_runtime_lock:
-        runtime = sam_preview_runtimes.get(model_name)
-        if runtime is not None:
-            return runtime
-
-        if str(MOBILE_SAM_ROOT) not in sys.path:
-            sys.path.insert(0, str(MOBILE_SAM_ROOT))
-
-        from sam2_coordinate_wrapper import load_sam2_predictor, resolve_sam2_model_option
-
-        model_option = resolve_sam2_model_option(model_name)
-        predictor, device = load_sam2_predictor(
-            model_name=model_name,
-            download_checkpoint=True,
-        )
-        runtime = {
-            "predictor": predictor,
-            "predictor_lock": threading.Lock(),
-            "device": device,
-            "model_name": model_name,
-            "model_label": model_option["label"],
-            "image_cache_key": None,
-        }
-        sam_preview_runtimes[model_name] = runtime
+    runtime = get_loaded_sam_preview_runtime(model_name)
+    if runtime is not None:
         return runtime
+
+    if str(MOBILE_SAM_ROOT) not in sys.path:
+        sys.path.insert(0, str(MOBILE_SAM_ROOT))
+
+    from sam2_coordinate_wrapper import load_sam2_predictor, resolve_sam2_model_option
+
+    model_option = resolve_sam2_model_option(model_name)
+    predictor, device = load_sam2_predictor(
+        model_name=model_name,
+        download_checkpoint=True,
+    )
+    runtime = {
+        "predictor": predictor,
+        "predictor_lock": threading.Lock(),
+        "device": device,
+        "model_name": model_name,
+        "model_label": model_option["label"],
+        "image_cache_key": None,
+    }
+
+    with sam_preview_runtime_lock:
+        existing_runtime = sam_preview_runtimes.get(model_name)
+        if existing_runtime is not None:
+            return existing_runtime
+        sam_preview_runtimes[model_name] = runtime
+    return runtime
 
 
 def preload_sam_preview_runtime(sam_model):
@@ -265,6 +278,7 @@ def preload_sam_preview_runtime(sam_model):
         runtime = get_sam_preview_runtime(model_name)
         with sam_preview_preload_lock:
             sam_preview_preload_errors.pop(model_name, None)
+            sam_preview_preload_started.discard(model_name)
         print(
             f"SAM preview model preloaded: {runtime['model_label']} on {runtime['device']}",
             flush=True,
@@ -278,8 +292,9 @@ def preload_sam_preview_runtime(sam_model):
 
 def start_sam_preview_preload(sam_model=DEFAULT_SAM_IMAGE_MODEL):
     model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    already_loaded = get_loaded_sam_preview_runtime(model_name) is not None
     with sam_preview_preload_lock:
-        if model_name in sam_preview_preload_started or model_name in sam_preview_runtimes:
+        if model_name in sam_preview_preload_started or already_loaded:
             return
         sam_preview_preload_started.add(model_name)
 
@@ -837,5 +852,4 @@ def preview_sam_video_for_processed_frames(
             f"with {runtime['model_label']} on {runtime['device']}{skipped_text}."
         ),
     )
-
 
