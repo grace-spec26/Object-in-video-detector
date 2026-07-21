@@ -443,10 +443,11 @@ def format_sam_video_progress_html(completed_frames, total_frames, message):
     total = max(1, int(total_frames))
     completed = int(np.clip(int(completed_frames), 0, total))
     percent = int(round((completed / total) * 100))
+    progress_label = f"{completed}/{total} ({percent}%)"
     return f"""
 <div style="width: 100%; padding: 6px 0;">
   <div style="display: flex; justify-content: space-between; font-size: 13px; color: #344054; margin-bottom: 4px;">
-    <span>{message}</span><span>{percent}%</span>
+    <span>{message}</span><span>{progress_label}</span>
   </div>
   <div style="height: 8px; background: #e5e7eb; border-radius: 999px; overflow: hidden;">
     <div style="height: 100%; width: {percent}%; background: #2563eb;"></div>

@@ -249,6 +249,16 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("Downloading SAM2.1 Hiera Small", message)
         self.assertIn("25/100 bytes", message)
 
+    def test_sam_video_progress_bar_displays_completed_frame_fraction(self):
+        progress_html = sam_preview_service.format_sam_video_progress_html(
+            1,
+            7,
+            "Processed selected frame",
+        )
+
+        self.assertIn(">1/7", progress_html)
+        self.assertIn("14%", progress_html)
+
     def test_sam_model_progress_prefers_partial_download_over_sparse_placeholder(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             checkpoint = Path(temp_dir) / "sam2.1_hiera_large.pt"

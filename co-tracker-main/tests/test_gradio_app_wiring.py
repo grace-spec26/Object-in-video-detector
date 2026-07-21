@@ -528,6 +528,7 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("processed_sam_video_progress", match.group(1))
         self.assertIn("export_status", match.group(1))
         self.assertIn("queue = True", match.group(1))
+        self.assertIn('show_progress = "hidden"', match.group(1))
 
     def test_track_and_submit_update_sam_video_review_controls(self):
         app_source = read_combined_source()

@@ -1608,6 +1608,7 @@ def configure_demo_callbacks(layout):
             processed_sam_video,
             export_status,
         ],
+        show_progress = "hidden",
         queue = True,
     )
 
