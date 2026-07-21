@@ -88,9 +88,9 @@ except ImportError:
 
 
 try:
-    from .ui_layout import build_demo_layout
+    from .ui_layout import build_demo_layout, frame_slider_maximum
 except ImportError:
-    from ui_layout import build_demo_layout
+    from ui_layout import build_demo_layout, frame_slider_maximum
 
 
 try:
@@ -885,7 +885,7 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         gr.update(open=False), # Close the video input drawer
         # tracking_mode, # Set the tracking mode
         preview_video[0], # Set the preview frame to the first frame
-        gr.update(minimum=0, maximum=num_frames - 1, value=0, interactive=interactive), # Set slider interactive
+        gr.update(minimum=0, maximum=frame_slider_maximum(num_frames), value=0, interactive=interactive), # Set slider interactive
         [[] for _ in range(num_frames)], # Set query_points to empty
         [[] for _ in range(num_frames)], # Set query_points_color to empty
         [[] for _ in range(num_frames)], 
@@ -912,7 +912,7 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         gr.update(value=SAM_VIDEO_PROGRESS_READY),
         None,
         None,
-        gr.update(minimum=0, maximum=0, value=0, interactive=False),
+        gr.update(minimum=0, maximum=frame_slider_maximum(0), value=0, interactive=False),
         None,
         empty_frame_points(num_frames),
         gr.update(interactive=False),
@@ -945,7 +945,7 @@ def track(
         result.visibility,
         result.selected_point_labels,
         painted_video,
-        gr.update(minimum=0, maximum=total_frame_count - 1, value=0, interactive=True),
+        gr.update(minimum=0, maximum=frame_slider_maximum(total_frame_count), value=0, interactive=True),
         painted_video[0],
         gr.update(interactive=True),
         gr.update(interactive=has_selected_points),

@@ -1,4 +1,5 @@
 import re
+import runpy
 import unittest
 from pathlib import Path
 
@@ -176,6 +177,23 @@ class GradioAppWiringTest(unittest.TestCase):
 
         self.assertIn("hydra-core>=1.3.2", requirements)
         self.assertIn("iopath>=0.1.10", requirements)
+
+    def test_frame_slider_maximum_keeps_gradio_slider_range_non_empty(self):
+        ui_layout_namespace = runpy.run_path(UI_LAYOUT_PATH)
+
+        self.assertIn("frame_slider_maximum", ui_layout_namespace)
+        frame_slider_maximum = ui_layout_namespace["frame_slider_maximum"]
+        self.assertEqual(frame_slider_maximum(0), 1)
+        self.assertEqual(frame_slider_maximum(1), 1)
+        self.assertEqual(frame_slider_maximum(2), 1)
+        self.assertEqual(frame_slider_maximum(5), 4)
+
+    def test_frame_slider_updates_use_non_collapsing_ranges(self):
+        app_source = APP_PATH.read_text()
+
+        self.assertNotIn("gr.update(minimum=0, maximum=0", app_source)
+        self.assertNotIn("maximum=num_frames - 1", app_source)
+        self.assertNotIn("maximum=total_frame_count - 1", app_source)
 
     def test_sam_preview_preloads_default_model_in_background(self):
         app_source = read_combined_source()

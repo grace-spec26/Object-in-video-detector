@@ -17,6 +17,15 @@ def _example_video_paths(base_dir):
     ]
 
 
+def frame_slider_maximum(frame_count):
+    """Return a Gradio-safe slider maximum for a zero-based frame index."""
+    try:
+        frame_count = int(frame_count)
+    except (TypeError, ValueError):
+        frame_count = 0
+    return max(1, frame_count - 1)
+
+
 def build_demo_layout(
     gr,
     *,
@@ -168,7 +177,7 @@ def build_demo_layout(
             with gr.Column():
                 tracked_query_frames = gr.Slider(
                     minimum=0,
-                    maximum=1,
+                    maximum=frame_slider_maximum(0),
                     value=0,
                     step=1,
                     label="Choose Processed Frame",
