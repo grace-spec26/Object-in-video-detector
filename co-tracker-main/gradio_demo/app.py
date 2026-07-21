@@ -9,6 +9,7 @@ os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
 import importlib.metadata as importlib_metadata
+import inspect
 from contextlib import contextmanager
 import sys
 from pathlib import Path
@@ -1662,10 +1663,13 @@ demo_layout = build_demo_layout(
 demo = demo_layout.demo
 
 
-demo.launch(
-    server_name="127.0.0.1",
-    server_port=int(os.environ.get("PORT", "7860")),
-    show_api=False,
-    show_error=True,
-    share=False,
-)
+launch_kwargs = {
+    "server_name": "127.0.0.1",
+    "server_port": int(os.environ.get("PORT", "7860")),
+    "show_error": True,
+    "share": False,
+}
+if "show_api" in inspect.signature(demo.launch).parameters:
+    launch_kwargs["show_api"] = False
+
+demo.launch(**launch_kwargs)

@@ -168,7 +168,7 @@ def build_demo_layout(
             with gr.Column():
                 tracked_query_frames = gr.Slider(
                     minimum=0,
-                    maximum=0,
+                    maximum=1,
                     value=0,
                     step=1,
                     label="Choose Processed Frame",
