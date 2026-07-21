@@ -129,27 +129,90 @@ class FakeSamPredictor:
 
 
 class GradioSamPreviewTest(unittest.TestCase):
-    def test_prepare_processed_video_review_reads_skip_and_reports_selected_frames(self):
+    def test_processed_video_review_first_yield_prepares_skip_selection(self):
         video_frames = np.zeros((10, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((10, 10, 20, 3), dtype=np.uint8)
+        selected_tracks = np.asarray(
+            [[[float(frame_index + 1), 5.0] for frame_index in range(10)]],
+            dtype=np.float32,
+        )
+        runtime = {
+            "predictor": FakeSamPredictor(),
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
 
-        progress_html, video_path, status = app.prepare_sam_video_preview(video_frames, 2)
+        with mock.patch.object(
+            sam_preview_service,
+            "get_loaded_sam_preview_runtime",
+            return_value=runtime,
+        ):
+            generator = app.preview_sam_video_for_processed_frames(
+                video_frames,
+                video_preview,
+                [[] for _ in range(10)],
+                selected_tracks,
+                np.ones((1, 10), dtype=bool),
+                [1],
+                video_preview.copy(),
+                24,
+                "sam2.1_hiera_small.pt",
+                2,
+                [[] for _ in range(10)],
+                [],
+            )
+            progress_html, video_path, status = next(generator)
 
         self.assertIn("Preparing SAM video preview", progress_html)
         self.assertIn("0/4 selected frame(s)", progress_html)
         self.assertIsNone(video_path)
         self.assertIn("4 selected frame(s)", status)
         self.assertIn("from 10 total video frame(s)", status)
+        self.assertEqual(len(runtime["predictor"].predict_calls), 0)
 
-    def test_prepare_processed_video_review_reports_missing_video_state(self):
-        progress_html, video_path, status = app.prepare_sam_video_preview(None, 0)
+    def test_processed_video_review_reports_missing_video_state(self):
+        generator = app.preview_sam_video_for_processed_frames(
+            None,
+            None,
+            [],
+            None,
+            None,
+            None,
+            None,
+            24,
+            "sam2.1_hiera_small.pt",
+            0,
+            [],
+            [],
+        )
+        progress_html, video_path, status = next(generator)
 
         self.assertEqual(progress_html, app.SAM_VIDEO_PROGRESS_READY)
         self.assertIsNone(video_path)
         self.assertIn("Submit and track a video", status)
 
-    def test_prepare_processed_video_review_rejects_negative_skip_value(self):
+    def test_processed_video_review_rejects_negative_skip_value(self):
+        video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((2, 10, 20, 3), dtype=np.uint8)
         with self.assertRaises(RuntimeError) as raised:
-            app.prepare_sam_video_preview(np.zeros((2, 20, 40, 3), dtype=np.uint8), -1)
+            next(
+                app.preview_sam_video_for_processed_frames(
+                    video_frames,
+                    video_preview,
+                    [[], []],
+                    np.asarray([[[5.0, 5.0], [6.0, 5.0]]], dtype=np.float32),
+                    np.ones((1, 2), dtype=bool),
+                    [1],
+                    video_preview.copy(),
+                    24,
+                    "sam2.1_hiera_small.pt",
+                    -1,
+                    [[], []],
+                    [],
+                )
+            )
 
         self.assertIn("non-negative", str(raised.exception))
 
@@ -735,13 +798,16 @@ class GradioSamPreviewTest(unittest.TestCase):
             first_progress_html, _, first_status = next(generator)
             second_progress_html, _, second_status = next(generator)
             third_progress_html, _, third_status = next(generator)
+            fourth_progress_html, _, fourth_status = next(generator)
 
         self.assertIn("0/2 selected frame(s)", first_progress_html)
-        self.assertIn("Loading SAM model", first_status)
+        self.assertIn("Preparing SAM video preview", first_status)
         self.assertIn("0/2 selected frame(s)", second_progress_html)
-        self.assertIn("Starting SAM video review", second_status)
-        self.assertIn("Processing selected frame 1/2", third_progress_html)
-        self.assertIn("video frame 1/4", third_status)
+        self.assertIn("Loading SAM model", second_status)
+        self.assertIn("0/2 selected frame(s)", third_progress_html)
+        self.assertIn("Starting SAM video review", third_status)
+        self.assertIn("Processing selected frame 1/2", fourth_progress_html)
+        self.assertIn("video frame 1/4", fourth_status)
         self.assertEqual(len(runtime["predictor"].predict_calls), 0)
 
     def test_processed_video_review_reports_model_load_error_without_blocking(self):
