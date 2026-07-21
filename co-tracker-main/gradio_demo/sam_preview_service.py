@@ -464,6 +464,57 @@ def selected_sam_video_frame_indices(frame_count, skip_count):
     ]
 
 
+def wait_for_sam_video_runtime(sam_model, selected_frame_count, frame_count):
+    model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    runtime = get_loaded_sam_preview_runtime(model_name, blocking=False)
+    if runtime is not None:
+        return runtime
+
+    start_sam_preview_preload(model_name)
+    while True:
+        runtime = get_loaded_sam_preview_runtime(model_name, blocking=False)
+        if runtime is not None:
+            return runtime
+
+        with sam_preview_preload_lock:
+            previous_error = sam_preview_preload_errors.get(model_name)
+            is_loading = model_name in sam_preview_preload_started
+
+        try:
+            _, model_message = sam_model_checkpoint_download_progress(model_name)
+        except Exception as exc:
+            model_message = f"SAM image model {model_name} progress unavailable: {exc}"
+
+        if previous_error and not is_loading:
+            yield (
+                format_sam_video_progress_html(
+                    0,
+                    selected_frame_count,
+                    f"0/{selected_frame_count} selected frame(s) - SAM model failed",
+                ),
+                None,
+                (
+                    f"SAM video review cannot start because SAM image model {model_name} "
+                    f"failed to load: {previous_error}. {model_message}."
+                ),
+            )
+            return None
+
+        yield (
+            format_sam_video_progress_html(
+                0,
+                selected_frame_count,
+                f"0/{selected_frame_count} selected frame(s) - Waiting for SAM model",
+            ),
+            None,
+            (
+                f"Waiting for SAM model before processing {selected_frame_count} selected frame(s) "
+                f"from {frame_count} total video frame(s): {model_message}."
+            ),
+        )
+        time.sleep(1)
+
+
 def sam_point_prompts_for_frame(
     video_frames,
     video_preview_array,
@@ -750,7 +801,10 @@ def preview_sam_video_for_processed_frames(
         ),
     )
 
-    runtime = get_sam_preview_runtime(sam_model)
+    runtime = yield from wait_for_sam_video_runtime(sam_model, selected_frame_count, frame_count)
+    if runtime is None:
+        return
+
     predictor = runtime["predictor"]
     review_frames = []
     processed_count = 0

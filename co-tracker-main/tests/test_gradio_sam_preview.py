@@ -530,7 +530,11 @@ class GradioSamPreviewTest(unittest.TestCase):
             written["frames"] = np.asarray(frames)
             written["fps"] = fps
 
-        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
+        with mock.patch.object(
+            sam_preview_service,
+            "get_loaded_sam_preview_runtime",
+            return_value=runtime,
+        ), mock.patch.object(
             sam_preview_service.mediapy,
             "write_video",
             side_effect=fake_write_video,
@@ -584,7 +588,11 @@ class GradioSamPreviewTest(unittest.TestCase):
             "image_cache_key": None,
         }
 
-        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
+        with mock.patch.object(
+            sam_preview_service,
+            "get_loaded_sam_preview_runtime",
+            return_value=runtime,
+        ), mock.patch.object(
             sam_preview_service.mediapy,
             "write_video",
         ):
@@ -614,6 +622,74 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("video frame 1/4", third_status)
         self.assertEqual(len(runtime["predictor"].predict_calls), 0)
 
+    def test_processed_video_review_reports_model_load_error_without_blocking(self):
+        model_name = "sam2.1_hiera_large.pt"
+        video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((2, 10, 20, 3), dtype=np.uint8)
+        selected_tracks = np.asarray(
+            [
+                [
+                    [5.0, 5.0],
+                    [6.0, 5.0],
+                ],
+            ],
+            dtype=np.float32,
+        )
+
+        with app.sam_preview_preload_lock:
+            original_started = set(app.sam_preview_preload_started)
+            original_errors = dict(app.sam_preview_preload_errors)
+            app.sam_preview_preload_started.discard(model_name)
+            app.sam_preview_preload_errors[model_name] = "download failed"
+        try:
+            with mock.patch.object(
+                sam_preview_service,
+                "get_loaded_sam_preview_runtime",
+                return_value=None,
+            ), mock.patch.object(
+                sam_preview_service,
+                "start_sam_preview_preload",
+            ) as start_preload, mock.patch.object(
+                sam_preview_service,
+                "get_sam_preview_runtime",
+                side_effect=AssertionError("blocking runtime load should not run"),
+            ), mock.patch.object(
+                sam_preview_service,
+                "sam_model_checkpoint_download_progress",
+                return_value=(0, "SAM2.1 Hiera Large checkpoint waiting to download"),
+            ):
+                results = list(
+                    app.preview_sam_video_for_processed_frames(
+                        video_frames,
+                        video_preview,
+                        [[], []],
+                        selected_tracks,
+                        np.ones((1, 2), dtype=bool),
+                        [1],
+                        video_preview.copy(),
+                        24,
+                        model_name,
+                        0,
+                        [[], []],
+                        [],
+                    )
+                )
+        finally:
+            with app.sam_preview_preload_lock:
+                app.sam_preview_preload_started.clear()
+                app.sam_preview_preload_started.update(original_started)
+                app.sam_preview_preload_errors.clear()
+                app.sam_preview_preload_errors.update(original_errors)
+
+        self.assertGreaterEqual(len(results), 2)
+        start_preload.assert_called_once_with(model_name)
+        final_progress_html, video_path, status = results[-1]
+        self.assertIn("0/2", final_progress_html)
+        self.assertIsNone(video_path)
+        self.assertIn("failed to load", status)
+        self.assertIn("download failed", status)
+        self.assertIn("checkpoint waiting to download", status)
+
     def test_processed_video_review_does_not_write_empty_preview_when_no_frames_run_sam(self):
         video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
         video_preview = np.zeros((2, 10, 20, 3), dtype=np.uint8)
@@ -626,7 +702,11 @@ class GradioSamPreviewTest(unittest.TestCase):
         }
         write_video = mock.Mock()
 
-        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
+        with mock.patch.object(
+            sam_preview_service,
+            "get_loaded_sam_preview_runtime",
+            return_value=runtime,
+        ), mock.patch.object(
             sam_preview_service.mediapy,
             "write_video",
             side_effect=write_video,
