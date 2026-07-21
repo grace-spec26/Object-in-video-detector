@@ -543,13 +543,66 @@ class GradioSamPreviewTest(unittest.TestCase):
             )
 
         self.assertGreater(len(results), 1)
+        self.assertIn("0/2 selected frame(s)", results[0][0])
         final_progress_html, video_path, status = results[-1]
         self.assertIn("100%", final_progress_html)
         self.assertEqual(video_path, written["path"])
         self.assertEqual(written["frames"].shape[0], 2)
         self.assertEqual(len(runtime["predictor"].predict_calls), 2)
-        self.assertIn("2/4 frame(s)", status)
-        self.assertIn("skipped 2 by skip setting", status)
+        self.assertIn("2/2 selected frame(s)", status)
+        self.assertIn("from 4 total video frame(s)", status)
+
+    def test_processed_video_review_yields_processing_status_before_running_sam(self):
+        video_frames = np.zeros((4, 20, 40, 3), dtype=np.uint8)
+        video_preview = np.zeros((4, 10, 20, 3), dtype=np.uint8)
+        selected_tracks = np.asarray(
+            [
+                [
+                    [5.0, 5.0],
+                    [6.0, 5.0],
+                    [7.0, 5.0],
+                    [8.0, 5.0],
+                ],
+            ],
+            dtype=np.float32,
+        )
+        runtime = {
+            "predictor": FakeSamPredictor(),
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime", return_value=runtime), mock.patch.object(
+            sam_preview_service.mediapy,
+            "write_video",
+        ):
+            generator = app.preview_sam_video_for_processed_frames(
+                video_frames,
+                video_preview,
+                [[], [], [], []],
+                selected_tracks,
+                np.ones((1, 4), dtype=bool),
+                [1],
+                video_preview.copy(),
+                24,
+                "sam2.1_hiera_small.pt",
+                1,
+                [[], [], [], []],
+                [],
+            )
+            first_progress_html, _, first_status = next(generator)
+            second_progress_html, _, second_status = next(generator)
+            third_progress_html, _, third_status = next(generator)
+
+        self.assertIn("0/2 selected frame(s)", first_progress_html)
+        self.assertIn("Loading SAM model", first_status)
+        self.assertIn("0/2 selected frame(s)", second_progress_html)
+        self.assertIn("Starting SAM video review", second_status)
+        self.assertIn("Processing selected frame 1/2", third_progress_html)
+        self.assertIn("video frame 1/4", third_status)
+        self.assertEqual(len(runtime["predictor"].predict_calls), 0)
 
     def test_processed_video_review_does_not_write_empty_preview_when_no_frames_run_sam(self):
         video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)

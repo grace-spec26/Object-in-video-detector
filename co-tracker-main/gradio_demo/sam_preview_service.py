@@ -455,6 +455,14 @@ def format_sam_video_progress_html(completed_frames, total_frames, message):
 """
 
 
+def selected_sam_video_frame_indices(frame_count, skip_count):
+    return [
+        frame_index
+        for frame_index in range(max(0, int(frame_count)))
+        if should_process_frame_for_skip(frame_index, skip_count)
+    ]
+
+
 def sam_point_prompts_for_frame(
     video_frames,
     video_preview_array,
@@ -726,39 +734,55 @@ def preview_sam_video_for_processed_frames(
         raise gr.Error(str(exc)) from exc
 
     frame_count = len(video_frames)
+    selected_frame_indices = selected_sam_video_frame_indices(frame_count, skip_count)
+    selected_frame_count = len(selected_frame_indices)
     yield (
-        format_sam_video_progress_html(0, frame_count, "Loading SAM model"),
+        format_sam_video_progress_html(
+            0,
+            selected_frame_count,
+            f"0/{selected_frame_count} selected frame(s) - Loading SAM model",
+        ),
         None,
-        "Loading SAM model for video review...",
+        (
+            f"Loading SAM model for {selected_frame_count} selected frame(s) "
+            f"from {frame_count} total video frame(s)..."
+        ),
     )
 
     runtime = get_sam_preview_runtime(sam_model)
     predictor = runtime["predictor"]
     review_frames = []
     processed_count = 0
-    skipped_by_frame_skip = 0
+    skipped_by_frame_skip = max(0, frame_count - selected_frame_count)
     skipped_no_points = 0
     skipped_no_positive = 0
     yield (
-        format_sam_video_progress_html(0, frame_count, "Starting SAM video review"),
+        format_sam_video_progress_html(
+            0,
+            selected_frame_count,
+            f"0/{selected_frame_count} selected frame(s) - Starting SAM video review",
+        ),
         None,
-        "Starting SAM video review...",
+        (
+            f"Starting SAM video review for {selected_frame_count} selected frame(s) "
+            f"from {frame_count} total video frame(s)."
+        ),
     )
 
-    for frame_index in range(frame_count):
+    for selected_index, frame_index in enumerate(selected_frame_indices, start=1):
         frame = as_uint8_rgb_frame(video_frames[frame_index])
-        if not should_process_frame_for_skip(frame_index, skip_count):
-            skipped_by_frame_skip += 1
-            yield (
-                format_sam_video_progress_html(
-                    frame_index + 1,
-                    frame_count,
-                    f"Checked frame {frame_index + 1}/{frame_count}",
-                ),
-                None,
-                f"SAM video review checked {frame_index + 1}/{frame_count} frame(s).",
-            )
-            continue
+        yield (
+            format_sam_video_progress_html(
+                selected_index - 1,
+                selected_frame_count,
+                f"Processing selected frame {selected_index}/{selected_frame_count}",
+            ),
+            None,
+            (
+                f"Processing selected frame {selected_index}/{selected_frame_count} "
+                f"(video frame {frame_index + 1}/{frame_count})."
+            ),
+        )
 
         point_coords, point_labels, _ = sam_point_prompts_for_frame(
             video_frames,
@@ -777,24 +801,30 @@ def preview_sam_video_for_processed_frames(
             skipped_no_points += 1
             yield (
                 format_sam_video_progress_html(
-                    frame_index + 1,
-                    frame_count,
-                    f"Checked frame {frame_index + 1}/{frame_count}",
+                    selected_index,
+                    selected_frame_count,
+                    f"Checked selected frame {selected_index}/{selected_frame_count}",
                 ),
                 None,
-                f"SAM video review checked {frame_index + 1}/{frame_count} frame(s).",
+                (
+                    f"SAM video review checked {selected_index}/{selected_frame_count} "
+                    f"selected frame(s); video frame {frame_index + 1}/{frame_count} has no points."
+                ),
             )
             continue
         if not np.any(point_labels == 1):
             skipped_no_positive += 1
             yield (
                 format_sam_video_progress_html(
-                    frame_index + 1,
-                    frame_count,
-                    f"Checked frame {frame_index + 1}/{frame_count}",
+                    selected_index,
+                    selected_frame_count,
+                    f"Checked selected frame {selected_index}/{selected_frame_count}",
                 ),
                 None,
-                f"SAM video review checked {frame_index + 1}/{frame_count} frame(s).",
+                (
+                    f"SAM video review checked {selected_index}/{selected_frame_count} "
+                    f"selected frame(s); video frame {frame_index + 1}/{frame_count} has no positive points."
+                ),
             )
             continue
 
@@ -810,12 +840,15 @@ def preview_sam_video_for_processed_frames(
         processed_count += 1
         yield (
             format_sam_video_progress_html(
-                frame_index + 1,
-                frame_count,
-                f"Processed frame {frame_index + 1}/{frame_count}",
+                selected_index,
+                selected_frame_count,
+                f"Processed {selected_index}/{selected_frame_count} selected frame(s)",
             ),
             None,
-            f"SAM video review processed {processed_count} frame(s).",
+            (
+                f"SAM video review processed {processed_count} frame(s); "
+                f"checked {selected_index}/{selected_frame_count} selected frame(s)."
+            ),
         )
 
     skipped_parts = []
@@ -829,9 +862,13 @@ def preview_sam_video_for_processed_frames(
 
     if not review_frames:
         yield (
-            format_sam_video_progress_html(frame_count, frame_count, "SAM video review complete"),
+            format_sam_video_progress_html(selected_frame_count, selected_frame_count, "SAM video review complete"),
             None,
-            f"No SAM-processed frames were available for video review{skipped_text}.",
+            (
+                "No SAM-processed frames were available for video review after checking "
+                f"{selected_frame_count}/{selected_frame_count} selected frame(s) "
+                f"from {frame_count} total video frame(s){skipped_text}."
+            ),
         )
         return
 
@@ -845,11 +882,11 @@ def preview_sam_video_for_processed_frames(
     mediapy.write_video(video_file_path, np.asarray(review_frames), fps=output_fps)
 
     yield (
-        format_sam_video_progress_html(frame_count, frame_count, "SAM video review complete"),
+        format_sam_video_progress_html(selected_frame_count, selected_frame_count, "SAM video review complete"),
         video_file_path,
         (
-            f"SAM video review complete for {processed_count}/{frame_count} frame(s) "
-            f"with {runtime['model_label']} on {runtime['device']}{skipped_text}."
+            f"SAM video review complete for {processed_count}/{selected_frame_count} selected frame(s) "
+            f"from {frame_count} total video frame(s) with {runtime['model_label']} "
+            f"on {runtime['device']}{skipped_text}."
         ),
     )
-
