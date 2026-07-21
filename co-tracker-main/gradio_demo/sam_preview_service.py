@@ -121,6 +121,16 @@ def sam_checkpoint_file_looks_unavailable(checkpoint_path):
     return allocated_bytes < stat_result.st_size * 0.5
 
 
+def checkpoint_downloaded_size_with_range(temporary_path, expected_size=0):
+    downloaded_size = Path(temporary_path).stat().st_size
+    range_path = Path(temporary_path).with_suffix(Path(temporary_path).suffix + ".range")
+    if range_path.exists() and not sam_checkpoint_file_looks_unavailable(range_path):
+        downloaded_size += range_path.stat().st_size
+    if expected_size > 0:
+        downloaded_size = min(downloaded_size, int(expected_size))
+    return downloaded_size
+
+
 def sam_model_checkpoint_download_progress(model_name):
     model_option = resolve_sam_preview_model_option(model_name)
     model_label = model_option.get("label", str(model_name))
@@ -137,7 +147,7 @@ def sam_model_checkpoint_download_progress(model_name):
     if temporary_path.exists() and (checkpoint_unavailable or not checkpoint_exists):
         if sam_checkpoint_file_looks_unavailable(temporary_path):
             return 0, f"{model_label} partial download is a local placeholder; restarting download"
-        downloaded_size = temporary_path.stat().st_size
+        downloaded_size = checkpoint_downloaded_size_with_range(temporary_path, expected_size)
         if expected_size > 0:
             percent = int(round((downloaded_size / expected_size) * 100))
             return percent, f"Downloading {model_label}: {downloaded_size}/{expected_size} bytes"
@@ -153,7 +163,7 @@ def sam_model_checkpoint_download_progress(model_name):
         return 100, f"{model_label} checkpoint downloaded"
 
     if temporary_path.exists():
-        downloaded_size = temporary_path.stat().st_size
+        downloaded_size = checkpoint_downloaded_size_with_range(temporary_path, expected_size)
         if expected_size > 0:
             percent = int(round((downloaded_size / expected_size) * 100))
             return percent, f"Downloading {model_label}: {downloaded_size}/{expected_size} bytes"

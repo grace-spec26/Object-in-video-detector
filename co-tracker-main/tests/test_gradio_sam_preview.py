@@ -276,6 +276,28 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("Downloading SAM2.1 Hiera Small", message)
         self.assertIn("25/100 bytes", message)
 
+    def test_sam_model_progress_counts_active_curl_range_resume_bytes(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint = Path(temp_dir) / "sam2.1_hiera_small.pt"
+            temporary_checkpoint = checkpoint.with_suffix(checkpoint.suffix + ".download")
+            range_checkpoint = temporary_checkpoint.with_suffix(temporary_checkpoint.suffix + ".range")
+            temporary_checkpoint.write_bytes(b"x" * 25)
+            range_checkpoint.write_bytes(b"y" * 15)
+            model_option = {
+                "label": "SAM2.1 Hiera Small",
+                "checkpoint": checkpoint,
+                "expected_size": 100,
+            }
+
+            with mock.patch.object(sam_preview_service, "resolve_sam_preview_model_option", return_value=model_option):
+                percent, message = app.sam_model_checkpoint_download_progress(
+                    "sam2.1_hiera_small.pt"
+                )
+
+        self.assertEqual(percent, 40)
+        self.assertIn("Downloading SAM2.1 Hiera Small", message)
+        self.assertIn("40/100 bytes", message)
+
     def test_sam_video_progress_bar_displays_completed_frame_fraction(self):
         progress_html = sam_preview_service.format_sam_video_progress_html(
             1,
