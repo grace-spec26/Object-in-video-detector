@@ -20,6 +20,16 @@ def read_combined_source():
 
 
 class GradioAppWiringTest(unittest.TestCase):
+    def test_intro_descriptor_describes_object_in_video_detector_workflow(self):
+        app_source = read_combined_source()
+
+        self.assertIn("Welcome to Object-in-Video Detector!", app_source)
+        self.assertIn("SAM/SAM2 mask previews", app_source)
+        self.assertIn("YOLO-ready segmentation data", app_source)
+        self.assertIn("mark positive points on the object and optional negative points", app_source)
+        self.assertIn("MobileSAM/SAM2-based object mask generation", app_source)
+        self.assertNotIn("This space demonstrates point (pixel) tracking in videos.", app_source)
+
     def test_track_button_runs_without_gradio_queue(self):
         app_source = read_combined_source()
         match = re.search(r"track_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)

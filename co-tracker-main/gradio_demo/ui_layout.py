@@ -67,13 +67,16 @@ def build_demo_layout(
         refinement_query_points = gr.State([])
 
         gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
-        gr.Markdown("<div style='text-align: left;'> \
-        <p>Welcome to <a href='https://cotracker3.github.io/' target='_blank'>CoTracker</a>! This space demonstrates point (pixel) tracking in videos. \
-        The model tracks points on a grid or points selected by you.  </p> \
-        <p> To get started, simply upload your <b>.mp4</b> video or click on one of the example videos to load them. The shorter the video, the faster the processing. We recommend submitting short videos of length <b>2-7 seconds</b>.</p> \
-        <p> After you uploaded a video, please click \"Submit\" and then click \"Track\" for grid tracking or specify points you want to track before clicking. Enjoy the results! </p>\
-        <p style='text-align: left'>For more details, check out our <a href='https://github.com/facebookresearch/co-tracker' target='_blank'>GitHub Repo</a> ⭐. We thank the authors of LocoTrack for their interactive demo.</p> \
-        </div>"
+        gr.Markdown(
+            """
+Welcome to Object-in-Video Detector! This app helps turn a short video into trackable object prompts, SAM/SAM2 mask previews, and YOLO-ready segmentation data.
+
+To get started, upload a `.mp4` video or choose an example. Short clips process faster; videos around 2-7 seconds are recommended for interactive use.
+
+After uploading, click "Submit", mark positive points on the object and optional negative points on the background, then click "Track". You can refine tracked points, preview SAM masks on individual frames or the processed video, and save the result for YOLO segmentation export.
+
+This interface builds on CoTracker point tracking and connects it with MobileSAM/SAM2-based object mask generation for video dataset preparation.
+            """.strip()
         )
 
         gr.Markdown("## First step: upload your video or select an example video, and click submit.")
