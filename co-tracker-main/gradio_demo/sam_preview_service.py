@@ -715,6 +715,60 @@ def preview_sam_on_frame(
     )
 
 
+def preview_sam_prompt_frame_on_model_switch(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    frame_num,
+    sam_model,
+    prefer_tracked_points=False,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+    refinement_source_frames=None,
+):
+    if video_frames is None or video_preview_array is None:
+        return None, "Submit a video before previewing SAM."
+
+    frame_index = int(np.clip(int(frame_num), 0, len(video_frames) - 1))
+    point_coords, point_labels, prompt_source = sam_point_prompts_for_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_index,
+        prefer_tracked_points=prefer_tracked_points,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+        refinement_source_frames=refinement_source_frames,
+    )
+
+    frame = as_uint8_rgb_frame(video_frames[frame_index])
+    if len(point_coords) == 0:
+        return frame, f"SAM model changed; no selected or visible tracked points on frame {frame_index}."
+
+    empty_mask = np.zeros(frame.shape[:2], dtype=bool)
+    preview = draw_sam_preview(frame, empty_mask, point_coords, point_labels)
+    prompt_summary = format_sam_prompt_summary(point_coords, point_labels)
+    positive_count = int(np.sum(point_labels == 1))
+    negative_count = int(np.sum(point_labels == 0))
+    try:
+        model_label = resolve_sam_preview_model_option(sam_model).get("label", str(sam_model))
+    except Exception:
+        model_label = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
+    return (
+        preview,
+        f"SAM model changed to {model_label}; reset preview to frame {frame_index} "
+        f"with {prompt_source} point prompts "
+        f"({positive_count} positive, {negative_count} negative point(s)). "
+        f"Loaded prompts: {prompt_summary}. Press Preview SAM to run this model.",
+    )
+
+
 def preview_sam_for_selected_frame(
     video_frames,
     video_preview_array,
@@ -746,6 +800,95 @@ def preview_sam_for_selected_frame(
         tracked_prompt_sources=tracked_prompt_sources,
         refinement_source_frames=refinement_source_frames,
     )
+
+
+def preview_sam_prompt_frame_for_selected_frame_on_model_switch(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
+    has_processed_selection = tracked_video_preview is not None and selected_tracks is not None
+    frame_num = tracked_frame_num if has_processed_selection else query_frame_num
+    refinement_source_frames = tracked_video_preview if has_processed_selection else None
+    return preview_sam_prompt_frame_on_model_switch(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_num,
+        sam_model,
+        prefer_tracked_points=has_processed_selection,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+        refinement_source_frames=refinement_source_frames,
+    )
+
+
+def stream_sam_model_switch_preview_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    frame_num,
+    sam_model,
+):
+    preview, status = preview_sam_prompt_frame_on_model_switch(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_num,
+        sam_model,
+    )
+    for progress in stream_sam_model_loading_progress(sam_model):
+        yield preview, progress, status
+
+
+def stream_processed_sam_model_switch_preview_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
+    preview, status = preview_sam_prompt_frame_for_selected_frame_on_model_switch(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        query_frame_num,
+        tracked_frame_num,
+        tracked_video_preview,
+        sam_model,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+    )
+    for progress in stream_sam_model_loading_progress(sam_model):
+        yield preview, progress, status
 
 
 def preview_sam_on_frame_with_progress(

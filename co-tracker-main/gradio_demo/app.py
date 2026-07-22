@@ -110,6 +110,7 @@ try:
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
         preview_sam_on_frame_with_progress,
+        preview_sam_prompt_frame_on_model_switch,
         preview_sam_video_for_processed_frames,
         resolve_sam_preview_model_option,
         sam_checkpoint_file_looks_unavailable,
@@ -120,7 +121,9 @@ try:
         sam_preview_runtime_lock,
         sam_preview_runtimes,
         start_sam_preview_preload,
+        stream_processed_sam_model_switch_preview_with_progress,
         stream_sam_model_loading_progress,
+        stream_sam_model_switch_preview_with_progress,
     )
 except ImportError:
     import sam_preview_service as sam_preview_service
@@ -139,6 +142,7 @@ except ImportError:
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
         preview_sam_on_frame_with_progress,
+        preview_sam_prompt_frame_on_model_switch,
         preview_sam_video_for_processed_frames,
         resolve_sam_preview_model_option,
         sam_checkpoint_file_looks_unavailable,
@@ -149,7 +153,9 @@ except ImportError:
         sam_preview_runtime_lock,
         sam_preview_runtimes,
         start_sam_preview_preload,
+        stream_processed_sam_model_switch_preview_with_progress,
         stream_sam_model_loading_progress,
+        stream_sam_model_switch_preview_with_progress,
     )
 
 
@@ -1277,23 +1283,45 @@ def configure_demo_callbacks(layout):
     )
 
     sam_model_dropdown.change(
-        fn = stream_sam_model_loading_progress,
+        fn = stream_sam_model_switch_preview_with_progress,
         inputs = [
+            video,
+            video_preview,
+            query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            query_frames,
             sam_model_dropdown,
         ],
         outputs = [
+            sam_preview_image,
             sam_model_loading_progress,
+            export_status,
         ],
         queue = True,
     )
 
     processed_sam_model_dropdown.change(
-        fn = stream_sam_model_loading_progress,
+        fn = stream_processed_sam_model_switch_preview_with_progress,
         inputs = [
+            video,
+            video_preview,
+            query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            query_frames,
+            tracked_query_frames,
+            tracked_video_preview,
             processed_sam_model_dropdown,
+            refinement_query_points,
+            tracked_prompt_sources,
         ],
         outputs = [
+            processed_sam_preview_image,
             processed_sam_model_loading_progress,
+            export_status,
         ],
         queue = True,
     )
