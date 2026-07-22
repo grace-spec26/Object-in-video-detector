@@ -106,6 +106,7 @@ try:
         draw_query_point,
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
+        mark_sam_video_preview_requested,
         preview_sam_for_selected_frame,
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
@@ -138,6 +139,7 @@ except ImportError:
         draw_query_point,
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
+        mark_sam_video_preview_requested,
         preview_sam_for_selected_frame,
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
@@ -1610,6 +1612,20 @@ def configure_demo_callbacks(layout):
         outputs = [
             processed_sam_preview_image,
             processed_sam_model_loading_progress,
+            export_status,
+        ],
+        queue = False,
+    )
+
+    processed_sam_video_button.click(
+        fn = mark_sam_video_preview_requested,
+        inputs = [
+            video,
+            processed_sam_video_skip_frames,
+        ],
+        outputs = [
+            processed_sam_video_progress,
+            processed_sam_video,
             export_status,
         ],
         queue = False,

@@ -529,18 +529,33 @@ class GradioAppWiringTest(unittest.TestCase):
             third_step_block.index("processed_sam_video = gr.Video"),
         )
 
-    def test_processed_sam_video_button_runs_single_queued_sam_video_review(self):
+    def test_processed_sam_video_button_marks_click_then_runs_queued_sam_video_review(self):
         app_source = read_combined_source()
-        click_match = re.search(
+        click_matches = re.findall(
             r"processed_sam_video_button\.click\((.*?)\n\s*\)",
             app_source,
             re.DOTALL,
         )
+        marker_click = next(
+            (click for click in click_matches if "fn = mark_sam_video_preview_requested" in click),
+            None,
+        )
+        review_click = next(
+            (click for click in click_matches if "fn = preview_sam_video_for_processed_frames" in click),
+            None,
+        )
 
-        self.assertIsNotNone(click_match)
         self.assertNotIn("prepare_sam_video_preview", app_source)
         self.assertNotIn("processed_sam_video_start", app_source)
-        self.assertIn("fn = preview_sam_video_for_processed_frames", click_match.group(1))
+        self.assertNotIn(".then(", app_source)
+        self.assertIsNotNone(marker_click)
+        self.assertIn("video", marker_click)
+        self.assertIn("processed_sam_video_skip_frames", marker_click)
+        self.assertIn("processed_sam_video_progress", marker_click)
+        self.assertIn("processed_sam_video", marker_click)
+        self.assertIn("export_status", marker_click)
+        self.assertIn("queue = False", marker_click)
+        self.assertIsNotNone(review_click)
         for state_name in (
             "video",
             "video_preview",
@@ -555,12 +570,12 @@ class GradioAppWiringTest(unittest.TestCase):
             "refinement_query_points",
             "tracked_prompt_sources",
         ):
-            self.assertIn(state_name, click_match.group(1))
-        self.assertIn("processed_sam_video", click_match.group(1))
-        self.assertIn("processed_sam_video_progress", click_match.group(1))
-        self.assertIn("export_status", click_match.group(1))
-        self.assertIn("queue = True", click_match.group(1))
-        self.assertIn('show_progress = "hidden"', click_match.group(1))
+            self.assertIn(state_name, review_click)
+        self.assertIn("processed_sam_video", review_click)
+        self.assertIn("processed_sam_video_progress", review_click)
+        self.assertIn("export_status", review_click)
+        self.assertIn("queue = True", review_click)
+        self.assertIn('show_progress = "hidden"', review_click)
 
     def test_track_and_submit_update_sam_video_review_controls(self):
         app_source = read_combined_source()
