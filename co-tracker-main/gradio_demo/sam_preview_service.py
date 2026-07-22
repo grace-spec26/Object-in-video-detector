@@ -508,32 +508,6 @@ def parse_sam_video_skip_count(value):
     return parse_frame_skip_count(value)
 
 
-def mark_sam_video_preview_requested(video_frames, sam_video_skip_frames):
-    if video_frames is None:
-        message = "Submit and track a video before running SAM video review."
-        gr.Warning(message, duration=5)
-        return SAM_VIDEO_PROGRESS_READY, None, message
-
-    try:
-        skip_count = parse_sam_video_skip_count(sam_video_skip_frames)
-    except ValueError as exc:
-        raise gr.Error(str(exc)) from exc
-
-    frame_count = len(video_frames)
-    selected_frame_count = len(selected_sam_video_frame_indices(frame_count, skip_count))
-    progress_message = (
-        f"Preparing SAM video preview for 0/{selected_frame_count} selected frame(s)"
-    )
-    return (
-        format_sam_video_progress_html(0, selected_frame_count, progress_message),
-        None,
-        (
-            f"Queued SAM video review for {selected_frame_count} selected frame(s) "
-            f"from {frame_count} total video frame(s)."
-        ),
-    )
-
-
 def wait_for_sam_video_runtime(sam_model, selected_frame_count, frame_count):
     model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
     runtime = get_loaded_sam_preview_runtime(model_name, blocking=False)

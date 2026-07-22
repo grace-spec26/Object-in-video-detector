@@ -529,16 +529,12 @@ class GradioAppWiringTest(unittest.TestCase):
             third_step_block.index("processed_sam_video = gr.Video"),
         )
 
-    def test_processed_sam_video_button_marks_click_then_runs_queued_sam_video_review(self):
+    def test_processed_sam_video_button_runs_single_queued_sam_video_review(self):
         app_source = read_combined_source()
         click_matches = re.findall(
             r"processed_sam_video_button\.click\((.*?)\n\s*\)",
             app_source,
             re.DOTALL,
-        )
-        marker_click = next(
-            (click for click in click_matches if "fn = mark_sam_video_preview_requested" in click),
-            None,
         )
         review_click = next(
             (click for click in click_matches if "fn = preview_sam_video_for_processed_frames" in click),
@@ -547,14 +543,9 @@ class GradioAppWiringTest(unittest.TestCase):
 
         self.assertNotIn("prepare_sam_video_preview", app_source)
         self.assertNotIn("processed_sam_video_start", app_source)
+        self.assertNotIn("mark_sam_video_preview_requested", app_source)
         self.assertNotIn(".then(", app_source)
-        self.assertIsNotNone(marker_click)
-        self.assertIn("video", marker_click)
-        self.assertIn("processed_sam_video_skip_frames", marker_click)
-        self.assertIn("processed_sam_video_progress", marker_click)
-        self.assertIn("processed_sam_video", marker_click)
-        self.assertIn("export_status", marker_click)
-        self.assertIn("queue = False", marker_click)
+        self.assertEqual(len(click_matches), 1)
         self.assertIsNotNone(review_click)
         for state_name in (
             "video",

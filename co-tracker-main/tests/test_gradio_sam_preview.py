@@ -129,18 +129,6 @@ class FakeSamPredictor:
 
 
 class GradioSamPreviewTest(unittest.TestCase):
-    def test_processed_video_review_click_marker_reads_skip_selection(self):
-        video_frames = np.zeros((10, 20, 40, 3), dtype=np.uint8)
-
-        progress_html, video_path, status = app.mark_sam_video_preview_requested(video_frames, 2)
-
-        self.assertIn("Preparing SAM video preview", progress_html)
-        self.assertIn("0/4 selected frame(s)", progress_html)
-        self.assertIsNone(video_path)
-        self.assertIn("Queued SAM video review", status)
-        self.assertIn("4 selected frame(s)", status)
-        self.assertIn("from 10 total video frame(s)", status)
-
     def test_processed_video_review_first_yield_prepares_skip_selection(self):
         video_frames = np.zeros((10, 20, 40, 3), dtype=np.uint8)
         video_preview = np.zeros((10, 10, 20, 3), dtype=np.uint8)
