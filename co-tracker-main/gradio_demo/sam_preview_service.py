@@ -421,6 +421,7 @@ def select_sam_preview_mask(masks, scores, point_coords, point_labels):
     labels = np.asarray(point_labels, dtype=np.int32)
     positives = coords[labels == 1]
     negatives = coords[labels == 0]
+    prompt_valid_indices = []
     scored_indices = []
     for index, mask in enumerate(masks_array):
         positive_hits = sam_preview_mask_values_at_points(mask, positives)
@@ -429,8 +430,14 @@ def select_sam_preview_mask(masks, scores, point_coords, point_labels):
         negative_score = float(np.mean(~negative_hits)) if len(negative_hits) else 1.0
         sam_score = float(scores[index]) if index < len(scores) else 0.0
         area = float(np.count_nonzero(mask))
+        positives_satisfied = bool(np.all(positive_hits)) if len(positive_hits) else True
+        negatives_satisfied = bool(np.all(~negative_hits)) if len(negative_hits) else True
+        if positives_satisfied and negatives_satisfied and area > 0:
+            prompt_valid_indices.append((area, sam_score, -index, index))
         combined_score = 5.0 * positive_score + 4.0 * negative_score + sam_score
         scored_indices.append((combined_score, sam_score, -area, index))
+    if prompt_valid_indices:
+        return int(max(prompt_valid_indices)[-1])
     return int(max(scored_indices)[-1])
 
 

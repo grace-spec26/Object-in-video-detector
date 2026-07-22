@@ -296,6 +296,38 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertGreater(preview[25, 50, 1], 0)
         self.assertEqual(preview[42, 140].tolist(), [255, 0, 0])
 
+    def test_preview_prefers_object_mask_over_tiny_point_blob_when_prompts_are_satisfied(self):
+        video_frames, video_preview, query_points = self._sample_video()
+        tiny_blob = np.zeros((100, 200), dtype=bool)
+        tiny_blob[19:22, 49:52] = True
+        object_mask = np.zeros((100, 200), dtype=bool)
+        object_mask[10:40, 30:100] = True
+        predictor = FakeSamPredictor(
+            masks=np.stack([tiny_blob, object_mask], axis=0),
+            scores=np.asarray([0.99, 0.05], dtype=np.float32),
+        )
+        runtime = {
+            "predictor": predictor,
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime_if_ready", return_value=(runtime, None)):
+            preview, _ = app.preview_sam_on_frame(
+                video_frames,
+                video_preview,
+                query_points,
+                None,
+                None,
+                None,
+                1,
+                "sam2.1_hiera_small.pt",
+            )
+
+        self.assertGreater(preview[25, 60, 1], 0)
+
     def test_preview_draws_prompt_points_while_sam_model_is_loading(self):
         video_frames, video_preview, query_points = self._sample_video()
 
