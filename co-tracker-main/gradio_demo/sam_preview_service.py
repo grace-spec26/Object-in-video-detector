@@ -62,6 +62,8 @@ SAM_IMAGE_MODEL_CHOICES = (
     "sam2.1_hiera_large.pt",
 )
 DEFAULT_SAM_IMAGE_MODEL = "sam2.1_hiera_small.pt"
+SAM_PREVIEW_RUNTIME_READY_WAIT_SECONDS = 8.0
+SAM_PREVIEW_RUNTIME_POLL_SECONDS = 0.1
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 MOBILE_SAM_ROOT = PROJECT_ROOT / "MobileSAM-master"
 sam_preview_runtime_lock = threading.Lock()
@@ -317,35 +319,52 @@ def start_sam_preview_preload(sam_model=DEFAULT_SAM_IMAGE_MODEL):
     thread.start()
 
 
-def get_sam_preview_runtime_if_ready(sam_model):
+def get_sam_preview_runtime_if_ready(
+    sam_model,
+    wait_for_ready_seconds=0,
+    poll_interval_seconds=SAM_PREVIEW_RUNTIME_POLL_SECONDS,
+):
     model_name = str(sam_model or DEFAULT_SAM_IMAGE_MODEL)
     runtime_message = (
         f"SAM preview model {model_name} is still loading or downloading. "
         "Try Preview SAM again in a moment."
     )
+    deadline = time.time() + max(0.0, float(wait_for_ready_seconds or 0))
 
-    acquired = sam_preview_runtime_lock.acquire(blocking=False)
-    if not acquired:
+    while True:
+        acquired = sam_preview_runtime_lock.acquire(blocking=False)
+        if acquired:
+            try:
+                runtime = sam_preview_runtimes.get(model_name)
+                if runtime is not None:
+                    return runtime, None
+            finally:
+                sam_preview_runtime_lock.release()
+
         start_sam_preview_preload(model_name)
-        return None, runtime_message
 
-    try:
-        runtime = sam_preview_runtimes.get(model_name)
-        if runtime is not None:
-            return runtime, None
-    finally:
-        sam_preview_runtime_lock.release()
+        with sam_preview_preload_lock:
+            previous_error = sam_preview_preload_errors.get(model_name)
+            is_loading = model_name in sam_preview_preload_started
 
-    with sam_preview_preload_lock:
-        previous_error = sam_preview_preload_errors.get(model_name)
-    start_sam_preview_preload(model_name)
-    if previous_error:
-        return (
-            None,
-            f"SAM preview model {model_name} failed to load previously: {previous_error}. "
-            "Retrying in the background.",
-        )
-    return None, runtime_message
+        if previous_error and not is_loading:
+            return (
+                None,
+                f"SAM preview model {model_name} failed to load previously: {previous_error}. "
+                "Retrying in the background.",
+            )
+
+        try:
+            checkpoint_percent, checkpoint_message = sam_model_checkpoint_download_progress(model_name)
+        except Exception:
+            checkpoint_percent, checkpoint_message = 0, runtime_message
+        if checkpoint_percent < 100:
+            return None, checkpoint_message
+
+        remaining_wait = deadline - time.time()
+        if remaining_wait <= 0:
+            return None, runtime_message
+        time.sleep(min(float(poll_interval_seconds), remaining_wait))
 
 
 def as_uint8_rgb_frame(frame):
@@ -673,7 +692,10 @@ def preview_sam_on_frame(
 
     frame = as_uint8_rgb_frame(video_frames[frame_index])
     prompt_summary = format_sam_prompt_summary(point_coords, point_labels)
-    runtime, loading_message = get_sam_preview_runtime_if_ready(sam_model)
+    runtime, loading_message = get_sam_preview_runtime_if_ready(
+        sam_model,
+        wait_for_ready_seconds=SAM_PREVIEW_RUNTIME_READY_WAIT_SECONDS,
+    )
     if runtime is None:
         empty_mask = np.zeros(frame.shape[:2], dtype=bool)
         prompt_preview = draw_sam_preview(frame, empty_mask, point_coords, point_labels)

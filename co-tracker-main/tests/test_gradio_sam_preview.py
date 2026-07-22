@@ -319,6 +319,45 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("point_coords=[[50.0, 20.0], [140.0, 40.0]]", status)
         self.assertIn("point_labels=[1, 0]", status)
 
+    def test_preview_waits_for_ready_runtime_when_checkpoint_is_local(self):
+        video_frames, video_preview, query_points = self._sample_video()
+        predictor = FakeSamPredictor()
+        runtime = {
+            "predictor": predictor,
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2 Base Plus",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+        wait_values = []
+
+        def fake_runtime_if_ready(_sam_model, wait_for_ready_seconds=0):
+            wait_values.append(wait_for_ready_seconds)
+            if wait_for_ready_seconds > 0:
+                return runtime, None
+            return None, "SAM preview model is still loading."
+
+        with mock.patch.object(
+            sam_preview_service,
+            "get_sam_preview_runtime_if_ready",
+            side_effect=fake_runtime_if_ready,
+        ):
+            preview, status = app.preview_sam_on_frame(
+                video_frames,
+                video_preview,
+                query_points,
+                None,
+                None,
+                None,
+                1,
+                "sam2.1_hiera_base_plus.pt",
+            )
+
+        self.assertGreater(wait_values[0], 0)
+        self.assertEqual(len(predictor.predict_calls), 1)
+        self.assertIn("Fake SAM2 Base Plus", status)
+        self.assertGreater(preview[25, 50, 1], 0)
+
     def test_sam_model_progress_reports_checkpoint_download_percentage(self):
         with tempfile.TemporaryDirectory() as temp_dir:
             checkpoint = Path(temp_dir) / "sam2.1_hiera_small.pt"

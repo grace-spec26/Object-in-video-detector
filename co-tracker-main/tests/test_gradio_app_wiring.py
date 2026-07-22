@@ -236,14 +236,16 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertNotIn("predictor.set_image", preview_fn)
         self.assertIn("from sam_preview_service import", app_source)
 
-    def test_single_frame_sam_preview_returns_while_model_preloads(self):
+    def test_single_frame_sam_preview_waits_briefly_while_model_preloads(self):
         service_source = SAM_SERVICE_PATH.read_text()
         preview_fn = service_source.split("def preview_sam_on_frame", maxsplit=1)[1]
         preview_fn = preview_fn.split("def preview_sam_for_selected_frame", maxsplit=1)[0]
 
         self.assertIn("def get_sam_preview_runtime_if_ready", service_source)
         self.assertIn("sam_preview_runtime_lock.acquire(blocking=False)", service_source)
-        self.assertIn("runtime, loading_message = get_sam_preview_runtime_if_ready(sam_model)", preview_fn)
+        self.assertIn("SAM_PREVIEW_RUNTIME_READY_WAIT_SECONDS", service_source)
+        self.assertIn("runtime, loading_message = get_sam_preview_runtime_if_ready(", preview_fn)
+        self.assertIn("wait_for_ready_seconds=SAM_PREVIEW_RUNTIME_READY_WAIT_SECONDS", preview_fn)
         self.assertIn("prompt_preview = draw_sam_preview", preview_fn)
         self.assertIn("Loaded prompts: {prompt_summary}", preview_fn)
         self.assertIn("return prompt_preview", preview_fn)
@@ -347,13 +349,14 @@ class GradioAppWiringTest(unittest.TestCase):
         service_source = SAM_SERVICE_PATH.read_text()
         runtime_fn = service_source.split("def get_sam_preview_runtime_if_ready", maxsplit=1)[1]
         runtime_fn = runtime_fn.split("def as_uint8_rgb_frame", maxsplit=1)[0]
-        lock_busy_branch = runtime_fn.split("if not acquired:", maxsplit=1)[1]
-        lock_busy_branch = lock_busy_branch.split("try:", maxsplit=1)[0]
 
-        self.assertIn("start_sam_preview_preload(model_name)", lock_busy_branch)
+        self.assertIn("while True:", runtime_fn)
+        self.assertIn("sam_preview_runtime_lock.acquire(blocking=False)", runtime_fn)
+        self.assertIn("start_sam_preview_preload(model_name)", runtime_fn)
+        self.assertIn("remaining_wait = deadline - time.time()", runtime_fn)
         self.assertLess(
-            lock_busy_branch.index("start_sam_preview_preload(model_name)"),
-            lock_busy_branch.index("return None, runtime_message"),
+            runtime_fn.index("start_sam_preview_preload(model_name)"),
+            runtime_fn.index("with sam_preview_preload_lock:"),
         )
 
     def test_third_step_has_processed_frame_and_sam_preview_blocks(self):
