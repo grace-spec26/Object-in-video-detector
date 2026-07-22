@@ -711,6 +711,7 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("0/2 selected frame(s)", results[0][0])
         final_progress_html, video_path, status = results[-1]
         self.assertIn("100%", final_progress_html)
+        self.assertIn("path", written)
         self.assertEqual(video_path, written["path"])
         self.assertEqual(written["frames"].shape[0], 2)
         self.assertEqual(len(runtime["predictor"].predict_calls), 2)
@@ -917,8 +918,10 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("download failed", status)
         self.assertIn("checkpoint waiting to download", status)
 
-    def test_processed_video_review_does_not_write_empty_preview_when_no_frames_run_sam(self):
+    def test_processed_video_review_writes_unmasked_frames_when_no_frames_run_sam(self):
         video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
+        video_frames[0, :, :, 0] = 25
+        video_frames[1, :, :, 1] = 75
         video_preview = np.zeros((2, 10, 20, 3), dtype=np.uint8)
         runtime = {
             "predictor": FakeSamPredictor(),
@@ -927,7 +930,12 @@ class GradioSamPreviewTest(unittest.TestCase):
             "device": "cpu",
             "image_cache_key": None,
         }
-        write_video = mock.Mock()
+        written = {}
+
+        def fake_write_video(path, frames, fps):
+            written["path"] = path
+            written["frames"] = np.asarray(frames)
+            written["fps"] = fps
 
         with mock.patch.object(
             sam_preview_service,
@@ -936,7 +944,7 @@ class GradioSamPreviewTest(unittest.TestCase):
         ), mock.patch.object(
             sam_preview_service.mediapy,
             "write_video",
-            side_effect=write_video,
+            side_effect=fake_write_video,
         ):
             results = list(
                 app.preview_sam_video_for_processed_frames(
@@ -957,9 +965,13 @@ class GradioSamPreviewTest(unittest.TestCase):
 
         final_progress_html, video_path, status = results[-1]
         self.assertIn("100%", final_progress_html)
-        self.assertIsNone(video_path)
-        self.assertIn("No SAM-processed frames", status)
-        write_video.assert_not_called()
+        self.assertIn("path", written)
+        self.assertEqual(video_path, written["path"])
+        np.testing.assert_array_equal(written["frames"], video_frames)
+        self.assertEqual(len(runtime["predictor"].predict_calls), 0)
+        self.assertIn("0 SAM-masked frame(s)", status)
+        self.assertIn("2 unmasked frame(s)", status)
+        self.assertIn("unmasked 2 without points", status)
 
     def test_processed_video_review_surfaces_prediction_errors(self):
         video_frames = np.zeros((1, 20, 40, 3), dtype=np.uint8)

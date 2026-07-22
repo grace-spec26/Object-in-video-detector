@@ -866,6 +866,7 @@ def preview_sam_video_for_processed_frames(
 
     review_frames = []
     processed_count = 0
+    unmasked_count = 0
     skipped_by_frame_skip = max(0, frame_count - selected_frame_count)
     skipped_no_points = 0
     skipped_no_positive = 0
@@ -912,31 +913,36 @@ def preview_sam_video_for_processed_frames(
         )
         if len(point_coords) == 0:
             skipped_no_points += 1
+            review_frames.append(frame)
+            unmasked_count += 1
             yield (
                 format_sam_video_progress_html(
                     selected_index,
                     selected_frame_count,
-                    f"Checked selected frame {selected_index}/{selected_frame_count}",
+                    f"Added unmasked frame {selected_index}/{selected_frame_count}",
                 ),
                 None,
                 (
-                    f"SAM video review checked {selected_index}/{selected_frame_count} "
-                    f"selected frame(s); video frame {frame_index + 1}/{frame_count} has no points."
+                    f"SAM video review added video frame {frame_index + 1}/{frame_count} "
+                    "without masking because it has no points."
                 ),
             )
             continue
         if not np.any(point_labels == 1):
             skipped_no_positive += 1
+            empty_mask = np.zeros(frame.shape[:2], dtype=bool)
+            review_frames.append(draw_sam_preview(frame, empty_mask, point_coords, point_labels))
+            unmasked_count += 1
             yield (
                 format_sam_video_progress_html(
                     selected_index,
                     selected_frame_count,
-                    f"Checked selected frame {selected_index}/{selected_frame_count}",
+                    f"Added unmasked frame {selected_index}/{selected_frame_count}",
                 ),
                 None,
                 (
-                    f"SAM video review checked {selected_index}/{selected_frame_count} "
-                    f"selected frame(s); video frame {frame_index + 1}/{frame_count} has no positive points."
+                    f"SAM video review added video frame {frame_index + 1}/{frame_count} "
+                    "without masking because it has no positive points."
                 ),
             )
             continue
@@ -976,11 +982,13 @@ def preview_sam_video_for_processed_frames(
     skipped_parts = []
     if skipped_by_frame_skip:
         skipped_parts.append(f"{skipped_by_frame_skip} by skip setting")
-    if skipped_no_points:
-        skipped_parts.append(f"{skipped_no_points} without points")
-    if skipped_no_positive:
-        skipped_parts.append(f"{skipped_no_positive} without positive points")
     skipped_text = f"; skipped {', '.join(skipped_parts)}" if skipped_parts else ""
+    unmasked_parts = []
+    if skipped_no_points:
+        unmasked_parts.append(f"{skipped_no_points} without points")
+    if skipped_no_positive:
+        unmasked_parts.append(f"{skipped_no_positive} without positive points")
+    unmasked_text = f"; unmasked {', '.join(unmasked_parts)}" if unmasked_parts else ""
 
     if not review_frames:
         yield (
@@ -1020,8 +1028,10 @@ def preview_sam_video_for_processed_frames(
         format_sam_video_progress_html(selected_frame_count, selected_frame_count, "SAM video review complete"),
         video_file_path,
         (
-            f"SAM video review complete for {processed_count}/{selected_frame_count} selected frame(s) "
+            f"SAM video review complete for {processed_count} SAM-masked frame(s) "
+            f"and {unmasked_count} unmasked frame(s); checked "
+            f"{selected_frame_count}/{selected_frame_count} selected frame(s) "
             f"from {frame_count} total video frame(s) with {runtime['model_label']} "
-            f"on {runtime['device']}{skipped_text}."
+            f"on {runtime['device']}{skipped_text}{unmasked_text}."
         ),
     )
