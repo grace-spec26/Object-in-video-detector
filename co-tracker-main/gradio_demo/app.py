@@ -107,6 +107,7 @@ try:
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
         mark_sam_video_preview_requested,
+        processed_sam_model_switch_preview_with_progress,
         preview_sam_for_selected_frame,
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
@@ -121,10 +122,8 @@ try:
         sam_preview_preload_started,
         sam_preview_runtime_lock,
         sam_preview_runtimes,
+        sam_model_switch_preview_with_progress,
         start_sam_preview_preload,
-        stream_processed_sam_model_switch_preview_with_progress,
-        stream_sam_model_loading_progress,
-        stream_sam_model_switch_preview_with_progress,
     )
 except ImportError:
     import sam_preview_service as sam_preview_service
@@ -140,6 +139,7 @@ except ImportError:
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
         mark_sam_video_preview_requested,
+        processed_sam_model_switch_preview_with_progress,
         preview_sam_for_selected_frame,
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
@@ -154,10 +154,8 @@ except ImportError:
         sam_preview_preload_started,
         sam_preview_runtime_lock,
         sam_preview_runtimes,
+        sam_model_switch_preview_with_progress,
         start_sam_preview_preload,
-        stream_processed_sam_model_switch_preview_with_progress,
-        stream_sam_model_loading_progress,
-        stream_sam_model_switch_preview_with_progress,
     )
 
 
@@ -1285,7 +1283,7 @@ def configure_demo_callbacks(layout):
     )
 
     sam_model_dropdown.change(
-        fn = stream_sam_model_switch_preview_with_progress,
+        fn = sam_model_switch_preview_with_progress,
         inputs = [
             video,
             video_preview,
@@ -1301,11 +1299,11 @@ def configure_demo_callbacks(layout):
             sam_model_loading_progress,
             export_status,
         ],
-        queue = True,
+        queue = False,
     )
 
     processed_sam_model_dropdown.change(
-        fn = stream_processed_sam_model_switch_preview_with_progress,
+        fn = processed_sam_model_switch_preview_with_progress,
         inputs = [
             video,
             video_preview,
@@ -1325,7 +1323,7 @@ def configure_demo_callbacks(layout):
             processed_sam_model_loading_progress,
             export_status,
         ],
-        queue = True,
+        queue = False,
     )
 
     current_frame.select(

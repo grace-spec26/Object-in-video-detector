@@ -861,6 +861,62 @@ def preview_sam_prompt_frame_for_selected_frame_on_model_switch(
     )
 
 
+def sam_model_switch_preview_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    frame_num,
+    sam_model,
+):
+    preview, status = preview_sam_prompt_frame_on_model_switch(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_num,
+        sam_model,
+    )
+    start_sam_preview_preload(sam_model)
+    return preview, current_sam_model_progress_html(sam_model), status
+
+
+def processed_sam_model_switch_preview_with_progress(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points=None,
+    tracked_prompt_sources=None,
+):
+    preview, status = preview_sam_prompt_frame_for_selected_frame_on_model_switch(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        query_frame_num,
+        tracked_frame_num,
+        tracked_video_preview,
+        sam_model,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+    )
+    start_sam_preview_preload(sam_model)
+    return preview, current_sam_model_progress_html(sam_model), status
+
+
 def stream_sam_model_switch_preview_with_progress(
     video_frames,
     video_preview_array,

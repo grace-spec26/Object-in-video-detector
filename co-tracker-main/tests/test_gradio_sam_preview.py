@@ -350,6 +350,26 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("SAM model changed to SAM2.1 Hiera Base Plus", status)
         self.assertIn("Loaded prompts: point_coords=[[50.0, 20.0], [140.0, 40.0]]", status)
 
+    def test_model_switch_starts_runtime_preload_without_streaming_queue(self):
+        video_frames, video_preview, query_points = self._sample_video()
+
+        with mock.patch.object(sam_preview_service, "start_sam_preview_preload") as start_preload:
+            preview, progress, status = app.sam_model_switch_preview_with_progress(
+                video_frames,
+                video_preview,
+                query_points,
+                None,
+                None,
+                None,
+                1,
+                "sam2.1_hiera_base_plus.pt",
+            )
+
+        start_preload.assert_called_once_with("sam2.1_hiera_base_plus.pt")
+        self.assertEqual(preview[20, 50].tolist(), [0, 255, 0])
+        self.assertIn("SAM2.1 Hiera Base Plus", progress)
+        self.assertIn("Press Preview SAM to run this model", status)
+
     def test_preview_waits_for_ready_runtime_when_checkpoint_is_local(self):
         video_frames, video_preview, query_points = self._sample_video()
         predictor = FakeSamPredictor()
