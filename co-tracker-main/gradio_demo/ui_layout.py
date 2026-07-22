@@ -66,7 +66,7 @@ def build_demo_layout(
         tracked_video_preview = gr.State(None)
         refinement_query_points = gr.State([])
 
-        gr.Markdown("# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos")
+        gr.Markdown("# Object-in-Video Detector")
         gr.Markdown(
             """
 Welcome to Object-in-Video Detector! This app helps turn a short video into trackable object prompts, SAM/SAM2 mask previews, and YOLO-ready segmentation data.

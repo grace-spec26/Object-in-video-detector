@@ -20,6 +20,15 @@ def read_combined_source():
 
 
 class GradioAppWiringTest(unittest.TestCase):
+    def test_page_heading_names_object_in_video_detector(self):
+        app_source = read_combined_source()
+
+        self.assertIn("# Object-in-Video Detector", app_source)
+        self.assertNotIn(
+            "# 🎨 CoTracker3: Simpler and Better Point Tracking by Pseudo-Labelling Real Videos",
+            app_source,
+        )
+
     def test_intro_descriptor_describes_object_in_video_detector_workflow(self):
         app_source = read_combined_source()
 
