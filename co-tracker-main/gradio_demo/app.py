@@ -425,13 +425,56 @@ def normalized_prompt_sources(prompt_sources):
     return [tuple(source) for source in (prompt_sources or [])]
 
 
+def prompt_source_exists(query_points, refinement_query_points, source):
+    if len(source) < 3:
+        return False
+
+    kind, frame_index, point_index = source[:3]
+    kind = str(kind)
+    try:
+        frame_index = int(frame_index)
+        point_index = int(point_index)
+    except (TypeError, ValueError):
+        return False
+
+    if frame_index < 0 or point_index < 0:
+        return False
+
+    points_by_frame = refinement_query_points if kind == "refinement" else query_points
+    if kind not in ("base", "refinement") or points_by_frame is None:
+        return False
+    if frame_index >= len(points_by_frame):
+        return False
+    return point_index < len(points_by_frame[frame_index])
+
+
+def prompt_sources_match_current_state(
+    query_points,
+    refinement_query_points,
+    sources,
+    track_count,
+):
+    return (
+        len(sources) == track_count
+        and all(
+            prompt_source_exists(query_points, refinement_query_points, source)
+            for source in sources
+        )
+    )
+
+
 def prompt_sources_for_tracks(query_points, refinement_query_points, selected_tracks, tracked_prompt_sources):
     if selected_tracks is None:
         return []
 
     track_count = int(np.asarray(selected_tracks).shape[0])
     sources = normalized_prompt_sources(tracked_prompt_sources)
-    if len(sources) == track_count:
+    if prompt_sources_match_current_state(
+        query_points,
+        refinement_query_points,
+        sources,
+        track_count,
+    ):
         return sources
 
     base_sources = flatten_prompt_sources(query_points, None)
@@ -521,7 +564,8 @@ def remove_track_prompt_from_state(
 ):
     sources = normalized_prompt_sources(tracked_prompt_sources)
     track_index = int(track_index)
-    if track_index < 0 or track_index >= len(sources):
+    tracks = np.asarray(selected_tracks)
+    if track_index < 0 or track_index >= tracks.shape[0]:
         return (
             query_points,
             query_points_color,
@@ -533,25 +577,18 @@ def remove_track_prompt_from_state(
             False,
         )
 
-    updated_query_points, updated_query_colors, updated_refinements, removed = remove_prompt_by_source(
-        query_points,
-        query_points_color,
-        refinement_query_points,
-        sources[track_index],
-    )
-    if not removed:
-        return (
+    updated_query_points = query_points
+    updated_query_colors = query_points_color
+    updated_refinements = refinement_query_points
+    if track_index < len(sources):
+        updated_query_points, updated_query_colors, updated_refinements, _ = remove_prompt_by_source(
             query_points,
             query_points_color,
             refinement_query_points,
-            selected_tracks,
-            selected_visibility,
-            selected_point_labels,
-            sources,
-            False,
+            sources[track_index],
         )
 
-    updated_tracks = np.delete(np.asarray(selected_tracks), track_index, axis=0)
+    updated_tracks = np.delete(tracks, track_index, axis=0)
     updated_visibility = (
         np.delete(np.asarray(selected_visibility), track_index, axis=0)
         if selected_visibility is not None

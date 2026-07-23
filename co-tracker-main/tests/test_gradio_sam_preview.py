@@ -808,6 +808,83 @@ class GradioSamPreviewTest(unittest.TestCase):
         )
         self.assertIn("point_coords=[[100.0, 50.0], [150.0, 75.0]]", status)
 
+    def test_processed_frame_delete_rebuilds_stale_source_for_existing_tracked_point(self):
+        video_preview = np.zeros((2, 40, 60, 3), dtype=np.uint8)
+        tracked_video_preview = video_preview.copy()
+        query_points = [[(20.0, 10.0, 0, 1)], []]
+        query_colors = [[(0, 255, 0)], []]
+        selected_tracks = np.asarray(
+            [
+                [
+                    [20.0, 10.0],
+                    [22.0, 12.0],
+                ],
+            ],
+            dtype=np.float32,
+        )
+        stale_sources = [("base", 0, 99)]
+        evt = types.SimpleNamespace(index=(20.0, 10.0))
+
+        result = app.edit_refinement_point(
+            0,
+            app.REFINEMENT_DELETE_MODE,
+            app.POSITIVE_POINT_CHOICE,
+            video_preview,
+            tracked_video_preview,
+            query_points,
+            query_colors,
+            1,
+            selected_tracks,
+            np.ones((1, 2), dtype=bool),
+            [1],
+            stale_sources,
+            [[], []],
+            evt,
+        )
+
+        self.assertEqual(result[2], [[], []])
+        self.assertEqual(result[3], [[], []])
+        self.assertEqual(result[4], 0)
+        self.assertEqual(np.asarray(result[5]).shape[0], 0)
+        self.assertEqual(result[8], [])
+        self.assertIn("Removed tracked point prompt", result[11])
+
+    def test_processed_frame_delete_removes_visible_track_when_original_prompt_state_is_missing(self):
+        video_preview = np.zeros((2, 40, 60, 3), dtype=np.uint8)
+        tracked_video_preview = video_preview.copy()
+        selected_tracks = np.asarray(
+            [
+                [
+                    [20.0, 10.0],
+                    [22.0, 12.0],
+                ],
+            ],
+            dtype=np.float32,
+        )
+        evt = types.SimpleNamespace(index=(20.0, 10.0))
+
+        result = app.edit_refinement_point(
+            0,
+            app.REFINEMENT_DELETE_MODE,
+            app.POSITIVE_POINT_CHOICE,
+            video_preview,
+            tracked_video_preview,
+            [[], []],
+            [[], []],
+            0,
+            selected_tracks,
+            np.ones((1, 2), dtype=bool),
+            [1],
+            [("base", 0, 0)],
+            [[], []],
+            evt,
+        )
+
+        self.assertEqual(np.asarray(result[5]).shape[0], 0)
+        self.assertEqual(result[7], [])
+        self.assertEqual(result[8], [])
+        self.assertIn("Removed tracked point prompt", result[11])
+
     def test_processed_video_review_honors_skip_frames_and_reports_progress(self):
         video_frames = np.zeros((4, 20, 40, 3), dtype=np.uint8)
         video_preview = np.zeros((4, 10, 20, 3), dtype=np.uint8)
