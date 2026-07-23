@@ -129,6 +129,54 @@ class FakeSamPredictor:
 
 
 class GradioSamPreviewTest(unittest.TestCase):
+    def test_selected_frame_yolo_export_uses_sam_mask_and_requested_split(self):
+        video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
+        video_frames[1, :, :] = [40, 80, 120]
+        video_preview = np.zeros((2, 10, 20, 3), dtype=np.uint8)
+        selected_tracks = np.asarray(
+            [[[5.0, 5.0], [6.0, 5.0]]],
+            dtype=np.float32,
+        )
+        mask = np.zeros((1, 20, 40), dtype=bool)
+        mask[0, 4:12, 6:16] = True
+        runtime = {
+            "predictor": FakeSamPredictor(masks=mask),
+            "predictor_lock": threading.Lock(),
+            "model_label": "Fake SAM2",
+            "device": "cpu",
+            "image_cache_key": None,
+        }
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            sam_preview_service,
+            "get_sam_preview_runtime",
+            return_value=runtime,
+        ):
+            status = app.export_selected_sam_frame_as_yolo_val(
+                video_frames,
+                video_preview,
+                [[] for _ in range(2)],
+                selected_tracks,
+                np.ones((1, 2), dtype=bool),
+                [1],
+                0,
+                1,
+                video_preview.copy(),
+                "sam2.1_hiera_small.pt",
+                [[] for _ in range(2)],
+                [],
+                tmp,
+            )
+
+            image_path = Path(tmp) / "images" / "val" / "val_img00001.jpg"
+            label_path = Path(tmp) / "labels" / "val" / "val_img00001.txt"
+            self.assertTrue(image_path.exists())
+            self.assertTrue(label_path.exists())
+
+        self.assertIn("Saved selected frame 1", status)
+        self.assertIn("val", status)
+        self.assertIn("1 wound polygon", status)
+
     def test_processed_video_review_first_yield_prepares_skip_selection(self):
         video_frames = np.zeros((10, 20, 40, 3), dtype=np.uint8)
         video_preview = np.zeros((10, 10, 20, 3), dtype=np.uint8)

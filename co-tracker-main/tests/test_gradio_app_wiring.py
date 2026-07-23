@@ -342,11 +342,15 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("export_status = gr.Textbox", third_step_block)
         self.assertLess(
             third_step_block.index("processed_sam_preview_image = gr.Image"),
-            third_step_block.index("export_status = gr.Textbox"),
+            third_step_block.index("yolo_dataset_output_dir = gr.Textbox"),
         )
         self.assertLess(
+            third_step_block.index("yolo_dataset_output_dir = gr.Textbox"),
+            third_step_block.index("save_sam_frame_train_button = gr.Button"),
+        )
+        self.assertLess(
+            third_step_block.index("save_sam_frame_val_button = gr.Button"),
             third_step_block.index("export_status = gr.Textbox"),
-            third_step_block.index("processed_sam_video_skip_frames = gr.Number"),
         )
 
     def test_lock_busy_sam_preview_prequeues_requested_model(self):
@@ -502,51 +506,42 @@ class GradioAppWiringTest(unittest.TestCase):
             r"def preview_sam_on_frame\([^)]*refinement_query_points",
         )
 
-    def test_third_step_has_sam_video_review_below_point_preview(self):
+    def test_third_step_replaces_sam_video_review_with_frame_yolo_export_buttons(self):
         app_source = read_combined_source()
         third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
 
-        self.assertIn("processed_sam_video_skip_frames = gr.Number", third_step_block)
-        self.assertIn('label="Skip frames after each loaded frame (0 = keep all)"', third_step_block)
-        self.assertIn('processed_sam_video_button = gr.Button("Preview SAM on Processed Video"', third_step_block)
-        self.assertIn("processed_sam_video_progress = gr.HTML", third_step_block)
-        self.assertIn("processed_sam_video = gr.Video", third_step_block)
-        self.assertIn('label="SAM video review"', third_step_block)
+        self.assertNotIn("processed_sam_video_skip_frames", app_source)
+        self.assertNotIn("processed_sam_video_button", app_source)
+        self.assertNotIn("processed_sam_video_progress", app_source)
+        self.assertNotIn("processed_sam_video = gr.Video", app_source)
+        self.assertNotIn("Save SAM Video Preview", third_step_block)
+        self.assertNotIn("Save Preview as YOLO Custom", third_step_block)
+        self.assertIn("save_sam_frame_train_button = gr.Button(", third_step_block)
+        self.assertIn('"Save Frame Preview as YOLO Custom Train"', third_step_block)
+        self.assertIn("save_sam_frame_val_button = gr.Button(", third_step_block)
+        self.assertIn('"Save Frame Preview as YOLO Custom Val"', third_step_block)
         self.assertLess(
             third_step_block.index("processed_sam_preview_image = gr.Image"),
-            third_step_block.index("processed_sam_video_skip_frames = gr.Number"),
+            third_step_block.index("save_sam_frame_train_button = gr.Button"),
         )
         self.assertLess(
-            third_step_block.index("processed_sam_video_skip_frames = gr.Number"),
-            third_step_block.index("processed_sam_video = gr.Video"),
-        )
-        self.assertLess(
-            third_step_block.index("processed_sam_video_button = gr.Button"),
-            third_step_block.index("processed_sam_video_progress = gr.HTML"),
-        )
-        self.assertLess(
-            third_step_block.index("processed_sam_video_progress = gr.HTML"),
-            third_step_block.index("processed_sam_video = gr.Video"),
+            third_step_block.index("save_sam_frame_val_button = gr.Button"),
+            third_step_block.index("export_status = gr.Textbox"),
         )
 
-    def test_processed_sam_video_button_runs_single_queued_sam_video_review(self):
+    def test_sam_frame_yolo_export_buttons_write_train_and_val_splits(self):
         app_source = read_combined_source()
-        click_matches = re.findall(
-            r"processed_sam_video_button\.click\((.*?)\n\s*\)",
-            app_source,
-            re.DOTALL,
-        )
-        review_click = next(
-            (click for click in click_matches if "fn = preview_sam_video_for_processed_frames" in click),
-            None,
-        )
+        train_click = re.search(r"save_sam_frame_train_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+        val_click = re.search(r"save_sam_frame_val_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
 
+        self.assertIsNotNone(train_click)
+        self.assertIsNotNone(val_click)
+        self.assertIn("fn = export_selected_sam_frame_as_yolo_train", train_click.group(1))
+        self.assertIn("fn = export_selected_sam_frame_as_yolo_val", val_click.group(1))
         self.assertNotIn("prepare_sam_video_preview", app_source)
         self.assertNotIn("processed_sam_video_start", app_source)
         self.assertNotIn("mark_sam_video_preview_requested", app_source)
-        self.assertNotIn(".then(", app_source)
-        self.assertEqual(len(click_matches), 1)
-        self.assertIsNotNone(review_click)
+        self.assertNotIn("processed_sam_video_button.click", app_source)
         for state_name in (
             "video",
             "video_preview",
@@ -554,21 +549,22 @@ class GradioAppWiringTest(unittest.TestCase):
             "selected_tracks",
             "selected_visibility",
             "selected_point_labels",
+            "query_frames",
+            "tracked_query_frames",
             "tracked_video_preview",
-            "video_fps",
             "processed_sam_model_dropdown",
-            "processed_sam_video_skip_frames",
             "refinement_query_points",
             "tracked_prompt_sources",
+            "yolo_dataset_output_dir",
         ):
-            self.assertIn(state_name, review_click)
-        self.assertIn("processed_sam_video", review_click)
-        self.assertIn("processed_sam_video_progress", review_click)
-        self.assertIn("export_status", review_click)
-        self.assertIn("queue = True", review_click)
-        self.assertIn('show_progress = "hidden"', review_click)
+            self.assertIn(state_name, train_click.group(1))
+            self.assertIn(state_name, val_click.group(1))
+        self.assertIn("export_status", train_click.group(1))
+        self.assertIn("export_status", val_click.group(1))
+        self.assertIn("queue = False", train_click.group(1))
+        self.assertIn("queue = False", val_click.group(1))
 
-    def test_track_and_submit_update_sam_video_review_controls(self):
+    def test_track_submit_and_reprocess_update_frame_yolo_export_buttons(self):
         app_source = read_combined_source()
         submit = re.search(r"submit\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
         track = re.search(r"track_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
@@ -577,52 +573,25 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIsNotNone(submit)
         self.assertIsNotNone(track)
         self.assertIsNotNone(reprocess)
-        self.assertIn("processed_sam_video_button", submit.group(1))
-        self.assertIn("processed_sam_video_skip_frames", submit.group(1))
-        self.assertIn("processed_sam_video", submit.group(1))
-        self.assertIn("processed_sam_video_progress", submit.group(1))
-        self.assertIn("processed_sam_video_button", track.group(1))
-        self.assertIn("processed_sam_video_skip_frames", track.group(1))
-        self.assertIn("processed_sam_video_progress", track.group(1))
-        self.assertIn("processed_sam_video_button", reprocess.group(1))
-        self.assertIn("processed_sam_video_skip_frames", reprocess.group(1))
-        self.assertIn("processed_sam_video_progress", reprocess.group(1))
+        self.assertIn("save_sam_frame_train_button", submit.group(1))
+        self.assertIn("save_sam_frame_val_button", submit.group(1))
+        self.assertIn("save_sam_frame_train_button", track.group(1))
+        self.assertIn("save_sam_frame_val_button", track.group(1))
+        self.assertIn("save_sam_frame_train_button", reprocess.group(1))
+        self.assertIn("save_sam_frame_val_button", reprocess.group(1))
 
-    def test_third_step_has_sam_video_save_and_yolo_export_controls(self):
+    def test_third_step_has_selected_frame_yolo_export_controls(self):
         app_source = read_combined_source()
         third_step_block = app_source.split("## Third step:", maxsplit=1)[1]
 
-        self.assertIn("sam_video_save_dir = gr.Textbox", third_step_block)
-        self.assertIn('label="SAM video save directory"', third_step_block)
-        self.assertIn('save_sam_video_button = gr.Button("Save SAM Video Preview"', third_step_block)
-        self.assertIn("saved_sam_video_file = gr.File", third_step_block)
-        self.assertIn("yolo_raw_mask_root = gr.Textbox", third_step_block)
-        self.assertIn('label="YOLO raw-mask root"', third_step_block)
         self.assertIn("yolo_dataset_output_dir = gr.Textbox", third_step_block)
         self.assertIn('label="YOLO dataset output directory"', third_step_block)
-        self.assertIn('save_yolo_custom_button = gr.Button("Save Preview as YOLO Custom"', third_step_block)
-
-    def test_sam_video_save_button_uses_review_video_and_user_directory(self):
-        app_source = read_combined_source()
-        match = re.search(r"save_sam_video_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
-
-        self.assertIsNotNone(match)
-        self.assertIn("fn = save_sam_video_review_from_state", match.group(1))
-        self.assertIn("processed_sam_video", match.group(1))
-        self.assertIn("sam_video_save_dir", match.group(1))
-        self.assertIn("video_fps", match.group(1))
-        self.assertIn("saved_sam_video_file", match.group(1))
-        self.assertIn("export_status", match.group(1))
-
-    def test_yolo_custom_button_runs_existing_segmentation_exporter_defaults(self):
-        app_source = read_combined_source()
-        match = re.search(r"save_yolo_custom_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
-
-        self.assertIsNotNone(match)
-        self.assertIn("fn = export_sam_preview_as_yolo_custom", match.group(1))
-        self.assertIn("yolo_raw_mask_root", match.group(1))
-        self.assertIn("yolo_dataset_output_dir", match.group(1))
-        self.assertIn("export_status", match.group(1))
+        self.assertIn("save_sam_frame_train_button = gr.Button(", third_step_block)
+        self.assertIn('"Save Frame Preview as YOLO Custom Train"', third_step_block)
+        self.assertIn("save_sam_frame_val_button = gr.Button(", third_step_block)
+        self.assertIn('"Save Frame Preview as YOLO Custom Val"', third_step_block)
+        self.assertNotIn("sam_video_save_dir", third_step_block)
+        self.assertNotIn("yolo_raw_mask_root", third_step_block)
 
 
 if __name__ == "__main__":

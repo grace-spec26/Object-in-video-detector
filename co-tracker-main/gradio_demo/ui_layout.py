@@ -42,9 +42,6 @@ def build_demo_layout(
     sam_model_progress_ready,
     refinement_edit_mode_choices,
     refinement_add_mode,
-    sam_video_progress_ready,
-    default_sam_video_save_dir,
-    default_raw_mask_root,
     default_yolo_dataset_dir,
     configure_callbacks=None,
 ):
@@ -73,7 +70,7 @@ Welcome to Object-in-Video Detector! This app helps turn a short video into trac
 
 To get started, upload a `.mp4` video or choose an example. Short clips process faster; videos around 2-7 seconds are recommended for interactive use.
 
-After uploading, click "Submit", mark positive points on the object and optional negative points on the background, then click "Track". You can refine tracked points, preview SAM masks on individual frames or the processed video, and save the result for YOLO segmentation export.
+After uploading, click "Submit", mark positive points on the object and optional negative points on the background, then click "Track". You can refine tracked points, preview SAM masks on individual frames, and save selected-frame masks for YOLO segmentation export.
 
 This interface builds on CoTracker point tracking and connects it with MobileSAM/SAM2-based object mask generation for video dataset preparation.
             """.strip()
@@ -226,49 +223,24 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
                     type="numpy",
                     interactive=False,
                 )
-                export_status = gr.Textbox(
-                    label="Export Status",
-                    interactive=False,
-                    lines=3,
-                )
-                processed_sam_video_skip_frames = gr.Number(
-                    value=0,
-                    precision=0,
-                    label="Skip frames after each loaded frame (0 = keep all)",
-                    interactive=False,
-                )
-                processed_sam_video_button = gr.Button("Preview SAM on Processed Video", interactive=False)
-                processed_sam_video_progress = gr.HTML(
-                    value=sam_video_progress_ready,
-                    show_label=False,
-                )
-                processed_sam_video = gr.Video(
-                    label="SAM video review",
-                    interactive=False,
-                    autoplay=True,
-                    loop=True,
-                )
-                sam_video_save_dir = gr.Textbox(
-                    value=str(default_sam_video_save_dir),
-                    label="SAM video save directory",
-                    interactive=True,
-                )
-                with gr.Row():
-                    save_sam_video_button = gr.Button("Save SAM Video Preview", interactive=True)
-                    save_yolo_custom_button = gr.Button("Save Preview as YOLO Custom", interactive=True)
-                saved_sam_video_file = gr.File(
-                    label="Saved SAM preview MP4",
-                    interactive=False,
-                )
-                yolo_raw_mask_root = gr.Textbox(
-                    value=str(default_raw_mask_root),
-                    label="YOLO raw-mask root",
-                    interactive=True,
-                )
                 yolo_dataset_output_dir = gr.Textbox(
                     value=str(default_yolo_dataset_dir),
                     label="YOLO dataset output directory",
                     interactive=True,
+                )
+                with gr.Row():
+                    save_sam_frame_train_button = gr.Button(
+                        "Save Frame Preview as YOLO Custom Train",
+                        interactive=False,
+                    )
+                    save_sam_frame_val_button = gr.Button(
+                        "Save Frame Preview as YOLO Custom Val",
+                        interactive=False,
+                    )
+                export_status = gr.Textbox(
+                    label="Export Status",
+                    interactive=False,
+                    lines=3,
                 )
 
         components = SimpleNamespace(
@@ -321,15 +293,8 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
             processed_sam_preview_button=processed_sam_preview_button,
             processed_sam_preview_image=processed_sam_preview_image,
             export_status=export_status,
-            processed_sam_video_skip_frames=processed_sam_video_skip_frames,
-            processed_sam_video_button=processed_sam_video_button,
-            processed_sam_video_progress=processed_sam_video_progress,
-            processed_sam_video=processed_sam_video,
-            sam_video_save_dir=sam_video_save_dir,
-            save_sam_video_button=save_sam_video_button,
-            save_yolo_custom_button=save_yolo_custom_button,
-            saved_sam_video_file=saved_sam_video_file,
-            yolo_raw_mask_root=yolo_raw_mask_root,
+            save_sam_frame_train_button=save_sam_frame_train_button,
+            save_sam_frame_val_button=save_sam_frame_val_button,
             yolo_dataset_output_dir=yolo_dataset_output_dir,
         )
 

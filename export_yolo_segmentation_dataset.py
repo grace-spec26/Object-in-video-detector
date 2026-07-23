@@ -49,6 +49,14 @@ class ExportRecord:
     polygons: List[List[Point]]
 
 
+@dataclass(frozen=True)
+class SingleFrameExportResult:
+    image_path: Path
+    label_path: Path
+    split: str
+    total_wound_instances: int
+
+
 def export_yolo_segmentation_dataset(
     raw_mask_root: Path | str = "raw-mask-data",
     output_dir: Path | str = "dataset",
@@ -140,6 +148,82 @@ def export_yolo_segmentation_dataset(
     )
     _print_stats(stats)
     return stats
+
+
+def export_single_mask_frame_to_yolo_split(
+    frame: object,
+    mask: object,
+    output_dir: Path | str = "dataset",
+    split: str = "train",
+    min_area_px: int = 20,
+    approx_epsilon: float = 2.0,
+    image_quality: int = 95,
+) -> SingleFrameExportResult:
+    """Append one frame and its binary mask as a YOLO segmentation item."""
+
+    split_name = str(split)
+    if split_name not in {"train", "val"}:
+        raise ValueError("split must be 'train' or 'val'.")
+    if min_area_px < 1:
+        raise ValueError("min_area_px must be at least 1.")
+    if approx_epsilon < 0:
+        raise ValueError("approx_epsilon must be non-negative.")
+    if not 1 <= image_quality <= 100:
+        raise ValueError("image_quality must be between 1 and 100.")
+
+    frame_array = _as_export_frame_array(frame)
+    polygons, width, height = _polygons_from_mask_array(
+        mask,
+        min_area_px=min_area_px,
+        approx_epsilon=approx_epsilon,
+    )
+    if frame_array.shape[0] != height or frame_array.shape[1] != width:
+        raise ValueError("Frame and mask dimensions must match.")
+    if not polygons:
+        raise ValueError("SAM mask did not contain any valid YOLO polygons.")
+
+    dataset_root = Path(output_dir).expanduser()
+    created_paths: List[Path] = []
+    with _dataset_export_lock(dataset_root):
+        _prepare_dataset_dir(dataset_root, overwrite=False)
+        images_dir = _split_images_dir(dataset_root, split_name)
+        labels_dir = _split_labels_dir(dataset_root, split_name)
+        next_index = _next_split_image_index(dataset_root, split_name)
+
+        output_name = f"{split_name}_img{next_index:05d}"
+        image_path = images_dir / f"{output_name}.jpg"
+        label_path = labels_dir / f"{output_name}.txt"
+        while image_path.exists() or label_path.exists():
+            next_index += 1
+            output_name = f"{split_name}_img{next_index:05d}"
+            image_path = images_dir / f"{output_name}.jpg"
+            label_path = labels_dir / f"{output_name}.txt"
+
+        try:
+            Image.fromarray(frame_array).convert("RGB").save(
+                image_path,
+                format="JPEG",
+                quality=image_quality,
+            )
+            created_paths.append(image_path)
+            rows = []
+            for polygon in polygons:
+                coords = " ".join(f"{value:.6f}" for point in polygon for value in point)
+                rows.append(f"0 {coords}")
+            label_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            created_paths.append(label_path)
+            _write_dataset_yaml(dataset_root)
+        except Exception:
+            for created_path in reversed(created_paths):
+                created_path.unlink(missing_ok=True)
+            raise
+
+    return SingleFrameExportResult(
+        image_path=image_path,
+        label_path=label_path,
+        split=split_name,
+        total_wound_instances=len(polygons),
+    )
 
 
 def export_no_wound_frames_to_yolo_dataset(
@@ -292,6 +376,47 @@ def _polygons_from_mask(
         width, height = mask.size
         wound_pixels = _wound_pixels(mask, wound_value=wound_value)
 
+    return _polygons_from_wound_pixels(
+        wound_pixels,
+        width=width,
+        height=height,
+        min_area_px=min_area_px,
+        approx_epsilon=approx_epsilon,
+    ), width, height
+
+
+def _polygons_from_mask_array(
+    mask: object,
+    min_area_px: int,
+    approx_epsilon: float,
+) -> Tuple[List[List[Point]], int, int]:
+    mask_array = np.asarray(mask)
+    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+        mask_array = mask_array[0]
+    if mask_array.ndim != 2:
+        raise ValueError(f"Expected a single-channel mask; got shape {mask_array.shape}.")
+
+    mask_array = mask_array.astype(bool)
+    height, width = mask_array.shape
+    y_coords, x_coords = np.nonzero(mask_array)
+    wound_pixels = set(zip(x_coords.tolist(), y_coords.tolist()))
+    polygons = _polygons_from_wound_pixels(
+        wound_pixels,
+        width=width,
+        height=height,
+        min_area_px=min_area_px,
+        approx_epsilon=approx_epsilon,
+    )
+    return polygons, width, height
+
+
+def _polygons_from_wound_pixels(
+    wound_pixels: Set[Pixel],
+    width: int,
+    height: int,
+    min_area_px: int,
+    approx_epsilon: float,
+) -> List[List[Point]]:
     polygons: List[List[Point]] = []
     for component in _connected_components(wound_pixels):
         if len(component) < min_area_px:
@@ -318,7 +443,7 @@ def _polygons_from_mask(
         if len(normalized) >= 3:
             polygons.append(normalized)
 
-    return polygons, width, height
+    return polygons
 
 
 def _wound_pixels(mask: Image.Image, wound_value: int) -> Set[Pixel]:

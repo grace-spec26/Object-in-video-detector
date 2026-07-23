@@ -1008,6 +1008,149 @@ def preview_sam_for_selected_frame_with_progress(
     return preview, current_sam_model_progress_html(sam_model), status
 
 
+def export_selected_sam_frame_as_yolo_split(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points,
+    tracked_prompt_sources,
+    yolo_dataset_output_dir,
+    split,
+):
+    if video_frames is None or video_preview_array is None:
+        message = "Submit and track a video before saving a SAM frame as YOLO custom."
+        gr.Warning(message, duration=5)
+        return message
+
+    has_processed_selection = tracked_video_preview is not None and selected_tracks is not None
+    frame_num = tracked_frame_num if has_processed_selection else query_frame_num
+    frame_index = int(np.clip(int(frame_num), 0, len(video_frames) - 1))
+    refinement_source_frames = tracked_video_preview if has_processed_selection else None
+    point_coords, point_labels, _ = sam_point_prompts_for_frame(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        frame_index,
+        prefer_tracked_points=has_processed_selection,
+        refinement_query_points=refinement_query_points,
+        tracked_prompt_sources=tracked_prompt_sources,
+        refinement_source_frames=refinement_source_frames,
+    )
+    if len(point_coords) == 0:
+        message = f"No selected or visible tracked points on frame {frame_index}."
+        gr.Warning(message, duration=5)
+        return message
+    if not np.any(point_labels == 1):
+        message = f"SAM needs at least one visible positive point on frame {frame_index}."
+        gr.Warning(message, duration=5)
+        return message
+
+    frame = as_uint8_rgb_frame(video_frames[frame_index])
+    try:
+        runtime = get_sam_preview_runtime(sam_model)
+        masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
+        best_mask = masks[select_sam_preview_mask(masks, scores, point_coords, point_labels)]
+
+        if str(PROJECT_ROOT) not in sys.path:
+            sys.path.insert(0, str(PROJECT_ROOT))
+        from export_yolo_segmentation_dataset import export_single_mask_frame_to_yolo_split
+
+        result = export_single_mask_frame_to_yolo_split(
+            frame=frame,
+            mask=best_mask,
+            output_dir=yolo_dataset_output_dir or PROJECT_ROOT / "dataset",
+            split=split,
+            min_area_px=20,
+            approx_epsilon=2.0,
+        )
+    except Exception as exc:
+        message = f"Failed to save selected frame as YOLO custom {split}: {exc}"
+        gr.Warning(message, duration=5)
+        return message
+
+    return (
+        f"Saved selected frame {frame_index} as YOLO custom {result.split}: "
+        f"{result.image_path} and {result.label_path} with "
+        f"{result.total_wound_instances} wound polygon(s)."
+    )
+
+
+def export_selected_sam_frame_as_yolo_train(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points,
+    tracked_prompt_sources,
+    yolo_dataset_output_dir,
+):
+    return export_selected_sam_frame_as_yolo_split(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        query_frame_num,
+        tracked_frame_num,
+        tracked_video_preview,
+        sam_model,
+        refinement_query_points,
+        tracked_prompt_sources,
+        yolo_dataset_output_dir,
+        "train",
+    )
+
+
+def export_selected_sam_frame_as_yolo_val(
+    video_frames,
+    video_preview_array,
+    query_points,
+    selected_tracks,
+    selected_visibility,
+    selected_point_labels,
+    query_frame_num,
+    tracked_frame_num,
+    tracked_video_preview,
+    sam_model,
+    refinement_query_points,
+    tracked_prompt_sources,
+    yolo_dataset_output_dir,
+):
+    return export_selected_sam_frame_as_yolo_split(
+        video_frames,
+        video_preview_array,
+        query_points,
+        selected_tracks,
+        selected_visibility,
+        selected_point_labels,
+        query_frame_num,
+        tracked_frame_num,
+        tracked_video_preview,
+        sam_model,
+        refinement_query_points,
+        tracked_prompt_sources,
+        yolo_dataset_output_dir,
+        "val",
+    )
+
+
 def preview_sam_video_for_processed_frames(
     video_frames,
     video_preview_array,

@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import export_yolo_segmentation_dataset as yolo_exporter  # noqa: E402
 from export_yolo_segmentation_dataset import (  # noqa: E402
     export_no_wound_frames_to_yolo_dataset,
+    export_single_mask_frame_to_yolo_split,
     export_yolo_segmentation_dataset,
     validate_yolo_segmentation_dataset,
 )
@@ -271,6 +272,44 @@ class YoloSegmentationDatasetExportTest(unittest.TestCase):
                 (dataset_dir / "labels" / "val" / "val_img00004.txt").read_bytes(),
                 b"",
             )
+
+    def test_exports_single_mask_frame_to_requested_split_with_polygon_label(self):
+        with TemporaryDirectory() as tmp:
+            dataset_dir = Path(tmp) / "dataset"
+            frame = np.zeros((20, 30, 3), dtype=np.uint8)
+            frame[:, :] = [20, 80, 140]
+            mask = np.zeros((20, 30), dtype=bool)
+            mask[3:10, 2:8] = True
+
+            result = export_single_mask_frame_to_yolo_split(
+                frame=frame,
+                mask=mask,
+                output_dir=dataset_dir,
+                split="train",
+                min_area_px=6,
+                approx_epsilon=1.0,
+            )
+
+            image_path = dataset_dir / "images" / "train" / "train_img00001.jpg"
+            label_path = dataset_dir / "labels" / "train" / "train_img00001.txt"
+            self.assertEqual(result.image_path, image_path)
+            self.assertEqual(result.label_path, label_path)
+            self.assertEqual(result.split, "train")
+            self.assertEqual(result.total_wound_instances, 1)
+            self.assertTrue(image_path.exists())
+            self.assertTrue(label_path.exists())
+            self.assertTrue((dataset_dir / "images" / "val").exists())
+            self.assertTrue((dataset_dir / "labels" / "val").exists())
+            self.assertEqual(list((dataset_dir / "images" / "val").glob("*.jpg")), [])
+
+            row = label_path.read_text(encoding="utf-8").strip()
+            values = row.split()
+            self.assertEqual(values[0], "0")
+            coords = [float(value) for value in values[1:]]
+            self.assertGreaterEqual(len(coords), 6)
+            self.assertEqual(len(coords) % 2, 0)
+            self.assertTrue(all(0.0 <= value <= 1.0 for value in coords))
+            self.assertTrue((dataset_dir / "dataset.yaml").exists())
 
     def test_validator_accepts_mixed_polygon_and_empty_labels(self):
         with TemporaryDirectory() as tmp:

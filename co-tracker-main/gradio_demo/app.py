@@ -57,7 +57,6 @@ try:
         parse_max_frame_count,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
-        save_sam_video_review,
     )
 except ImportError:
     from refinement_helpers import (
@@ -83,7 +82,6 @@ except ImportError:
         parse_max_frame_count,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
-        save_sam_video_review,
     )
 
 
@@ -107,6 +105,8 @@ try:
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
         processed_sam_model_switch_preview_with_progress,
+        export_selected_sam_frame_as_yolo_train,
+        export_selected_sam_frame_as_yolo_val,
         preview_sam_for_selected_frame,
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
@@ -138,6 +138,8 @@ except ImportError:
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
         processed_sam_model_switch_preview_with_progress,
+        export_selected_sam_frame_as_yolo_train,
+        export_selected_sam_frame_as_yolo_val,
         preview_sam_for_selected_frame,
         preview_sam_for_selected_frame_with_progress,
         preview_sam_on_frame,
@@ -198,8 +200,6 @@ REFINEMENT_ADD_MODE = "Add"
 REFINEMENT_DELETE_MODE = "Delete nearest"
 REFINEMENT_EDIT_MODE_CHOICES = (REFINEMENT_ADD_MODE, REFINEMENT_DELETE_MODE)
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_SAM_VIDEO_SAVE_DIR = PROJECT_ROOT / "sam-video-preview"
-DEFAULT_RAW_MASK_ROOT = PROJECT_ROOT / "raw-mask-data"
 DEFAULT_YOLO_DATASET_DIR = PROJECT_ROOT / "dataset"
 def point_label_from_choice(point_type):
     return POINT_LABEL_BY_CHOICE.get(str(point_type), 1)
@@ -911,10 +911,8 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
         current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=False),
         None,
-        gr.update(value=0, interactive=False),
         gr.update(interactive=False),
-        gr.update(value=SAM_VIDEO_PROGRESS_READY),
-        None,
+        gr.update(interactive=False),
         None,
         gr.update(minimum=0, maximum=frame_slider_maximum(0), value=0, interactive=False),
         None,
@@ -955,10 +953,8 @@ def track(
         gr.update(interactive=has_selected_points),
         current_sam_model_progress_html(DEFAULT_SAM_IMAGE_MODEL),
         gr.update(interactive=has_selected_points),
-        gr.update(value=0, interactive=has_selected_points),
         gr.update(interactive=has_selected_points),
-        gr.update(value=SAM_VIDEO_PROGRESS_READY),
-        None,
+        gr.update(interactive=has_selected_points),
         result.export_status,
     )
 
@@ -990,6 +986,10 @@ def track_and_reset_refinements(
     )
 
 
+def _unchanged_reprocess_outputs(message):
+    return (*[gr.update() for _ in range(14)], message)
+
+
 def reprocess_with_refinements(
     video_preview,
     video_input,
@@ -1003,24 +1003,7 @@ def reprocess_with_refinements(
     if video_preview is None or video_input is None:
         message = "Track a video before re-processing refinement points."
         gr.Warning(message, duration=5)
-        return (
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            message,
-        )
+        return _unchanged_reprocess_outputs(message)
 
     frame_count = int(video_preview.shape[0])
     refinement_query_points = ensure_frame_points(refinement_query_points, frame_count)
@@ -1029,24 +1012,7 @@ def reprocess_with_refinements(
     if merged_query_count == 0:
         message = "Add or select at least one point prompt before re-processing."
         gr.Warning(message, duration=5)
-        return (
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            gr.update(),
-            message,
-        )
+        return _unchanged_reprocess_outputs(message)
 
     merged_query_colors = merge_query_point_colors(
         query_points_color,
@@ -1073,6 +1039,7 @@ def reprocess_with_refinements(
     )
     result[9] = current_sam_model_progress_html(processed_sam_model)
     result[11] = gr.update(interactive=True)
+    result[12] = gr.update(interactive=True)
     result[-1] = (
         f"Re-processing complete with {merged_query_count} point prompt(s). "
         "Query points on video has been replaced."
@@ -1109,49 +1076,6 @@ def export_no_wound_frames_from_state(video_frames):
         f"Exported {stats.exported_images} no-wound frame(s) to {DEFAULT_YOLO_DATASET_DIR}: "
         f"{stats.train_images} train and {stats.val_images} val image(s), "
         "each with an empty label."
-    )
-
-
-def save_sam_video_review_from_state(sam_video_review, output_dir, video_fps):
-    try:
-        output_path = save_sam_video_review(
-            sam_video_review,
-            output_dir or DEFAULT_SAM_VIDEO_SAVE_DIR,
-            fps=video_fps or 24,
-        )
-    except Exception as exc:
-        message = f"Failed to save SAM video preview: {exc}"
-        gr.Warning(message, duration=5)
-        return None, message
-
-    return str(output_path), f"Saved SAM video preview to {output_path}."
-
-
-def export_sam_preview_as_yolo_custom(raw_mask_root, output_dir):
-    raw_mask_path = Path(raw_mask_root).expanduser() if raw_mask_root else DEFAULT_RAW_MASK_ROOT
-    dataset_path = Path(output_dir).expanduser() if output_dir else DEFAULT_YOLO_DATASET_DIR
-
-    try:
-        if str(PROJECT_ROOT) not in sys.path:
-            sys.path.insert(0, str(PROJECT_ROOT))
-        from export_yolo_segmentation_dataset import export_yolo_segmentation_dataset
-
-        stats = export_yolo_segmentation_dataset(
-            raw_mask_root=raw_mask_path,
-            output_dir=dataset_path,
-            train_ratio=0.8,
-            min_area_px=20,
-            approx_epsilon=2.0,
-        )
-    except Exception as exc:
-        message = f"Failed to save preview as YOLO custom: {exc}"
-        gr.Warning(message, duration=5)
-        return message
-
-    return (
-        f"Saved YOLO custom dataset to {dataset_path}: "
-        f"{stats.train_images} train image(s), {stats.val_images} val image(s), "
-        f"{stats.total_wound_instances} wound polygon(s)."
     )
 
 
@@ -1204,15 +1128,8 @@ def configure_demo_callbacks(layout):
     processed_sam_preview_button = layout.processed_sam_preview_button
     processed_sam_preview_image = layout.processed_sam_preview_image
     export_status = layout.export_status
-    processed_sam_video_skip_frames = layout.processed_sam_video_skip_frames
-    processed_sam_video_button = layout.processed_sam_video_button
-    processed_sam_video_progress = layout.processed_sam_video_progress
-    processed_sam_video = layout.processed_sam_video
-    sam_video_save_dir = layout.sam_video_save_dir
-    save_sam_video_button = layout.save_sam_video_button
-    save_yolo_custom_button = layout.save_yolo_custom_button
-    saved_sam_video_file = layout.saved_sam_video_file
-    yolo_raw_mask_root = layout.yolo_raw_mask_root
+    save_sam_frame_train_button = layout.save_sam_frame_train_button
+    save_sam_frame_val_button = layout.save_sam_frame_val_button
     yolo_dataset_output_dir = layout.yolo_dataset_output_dir
 
     submit.click(
@@ -1248,10 +1165,8 @@ def configure_demo_callbacks(layout):
             processed_sam_model_loading_progress,
             processed_sam_preview_button,
             processed_sam_preview_image,
-            processed_sam_video_skip_frames,
-            processed_sam_video_button,
-            processed_sam_video_progress,
-            processed_sam_video,
+            save_sam_frame_train_button,
+            save_sam_frame_val_button,
             tracked_video_preview,
             tracked_query_frames,
             tracked_frame_preview,
@@ -1430,10 +1345,8 @@ def configure_demo_callbacks(layout):
             processed_sam_model_dropdown,
             processed_sam_model_loading_progress,
             processed_sam_preview_button,
-            processed_sam_video_skip_frames,
-            processed_sam_video_button,
-            processed_sam_video_progress,
-            processed_sam_video,
+            save_sam_frame_train_button,
+            save_sam_frame_val_button,
             export_status,
         ],
         queue = False,
@@ -1549,10 +1462,8 @@ def configure_demo_callbacks(layout):
             processed_sam_model_dropdown,
             processed_sam_model_loading_progress,
             processed_sam_preview_button,
-            processed_sam_video_skip_frames,
-            processed_sam_video_button,
-            processed_sam_video_progress,
-            processed_sam_video,
+            save_sam_frame_train_button,
+            save_sam_frame_val_button,
             export_status,
         ],
         queue = False,
@@ -1613,8 +1524,8 @@ def configure_demo_callbacks(layout):
         queue = False,
     )
 
-    processed_sam_video_button.click(
-        fn = preview_sam_video_for_processed_frames,
+    save_sam_frame_train_button.click(
+        fn = export_selected_sam_frame_as_yolo_train,
         inputs = [
             video,
             video_preview,
@@ -1622,40 +1533,35 @@ def configure_demo_callbacks(layout):
             selected_tracks,
             selected_visibility,
             selected_point_labels,
+            query_frames,
+            tracked_query_frames,
             tracked_video_preview,
-            video_fps,
             processed_sam_model_dropdown,
-            processed_sam_video_skip_frames,
             refinement_query_points,
             tracked_prompt_sources,
+            yolo_dataset_output_dir,
         ],
         outputs = [
-            processed_sam_video_progress,
-            processed_sam_video,
-            export_status,
-        ],
-        show_progress = "hidden",
-        queue = True,
-    )
-
-    save_sam_video_button.click(
-        fn = save_sam_video_review_from_state,
-        inputs = [
-            processed_sam_video,
-            sam_video_save_dir,
-            video_fps,
-        ],
-        outputs = [
-            saved_sam_video_file,
             export_status,
         ],
         queue = False,
     )
 
-    save_yolo_custom_button.click(
-        fn = export_sam_preview_as_yolo_custom,
+    save_sam_frame_val_button.click(
+        fn = export_selected_sam_frame_as_yolo_val,
         inputs = [
-            yolo_raw_mask_root,
+            video,
+            video_preview,
+            query_points,
+            selected_tracks,
+            selected_visibility,
+            selected_point_labels,
+            query_frames,
+            tracked_query_frames,
+            tracked_video_preview,
+            processed_sam_model_dropdown,
+            refinement_query_points,
+            tracked_prompt_sources,
             yolo_dataset_output_dir,
         ],
         outputs = [
@@ -1681,9 +1587,6 @@ demo_layout = build_demo_layout(
     sam_model_progress_ready=SAM_MODEL_PROGRESS_READY,
     refinement_edit_mode_choices=REFINEMENT_EDIT_MODE_CHOICES,
     refinement_add_mode=REFINEMENT_ADD_MODE,
-    sam_video_progress_ready=SAM_VIDEO_PROGRESS_READY,
-    default_sam_video_save_dir=DEFAULT_SAM_VIDEO_SAVE_DIR,
-    default_raw_mask_root=DEFAULT_RAW_MASK_ROOT,
     default_yolo_dataset_dir=DEFAULT_YOLO_DATASET_DIR,
     configure_callbacks=configure_demo_callbacks,
 )
