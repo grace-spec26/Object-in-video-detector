@@ -54,6 +54,55 @@ def parse_frame_skip_count(value) -> int:
     return max(0, skip_count)
 
 
+def _parse_trim_frame_index(value, field_name: str) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return 0
+
+    try:
+        frame_index = int(float(value))
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a whole number.") from exc
+
+    return max(0, frame_index)
+
+
+def trim_video_to_frame_range(video: np.ndarray, start_frame=0, end_frame=0):
+    """Slice video frames on the server before max-frame and skip-frame sampling.
+
+    end_frame is exclusive. A value of 0 means trim through the end of the video.
+    """
+    video_array = np.asarray(video)
+    if video_array.ndim < 1:
+        raise ValueError("Video must contain a frame axis.")
+
+    total_frames = int(video_array.shape[0])
+    if total_frames <= 0:
+        raise ValueError("Video has no frames to trim.")
+
+    start_index = _parse_trim_frame_index(start_frame, "Trim start frame")
+    end_index = _parse_trim_frame_index(end_frame, "Trim end frame")
+
+    if start_index >= total_frames:
+        raise ValueError(
+            f"Trim start frame {start_index} is outside the video. "
+            f"The uploaded video has {total_frames} frame(s)."
+        )
+
+    if end_index <= 0:
+        end_index = total_frames
+    else:
+        end_index = min(end_index, total_frames)
+
+    if end_index <= start_index:
+        raise ValueError("Trim end frame must be greater than trim start frame.")
+
+    return video_array[start_index:end_index], start_index, end_index
+
+
 def _even(value: int) -> int:
     return max(2, value - (value % 2))
 

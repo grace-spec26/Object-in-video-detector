@@ -79,11 +79,27 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
         gr.Markdown("## First step: upload your video or select an example video, and click submit.")
         with gr.Row():
             with gr.Accordion("Your video input", open=True) as video_in_drawer:
-                video_in = gr.Video(label="Video Input", format="mp4")
+                video_in = gr.File(
+                    label="Video Input",
+                    file_types=["video", ".mp4", ".mov", ".avi", ".mkv"],
+                    type="filepath",
+                )
                 tracking_resolution = gr.Dropdown(
                     choices=list(tracking_resolution_options),
                     value=default_tracking_resolution,
                     label="Tracking Resolution",
+                    interactive=True,
+                )
+                trim_start_frame_input = gr.Number(
+                    value=0,
+                    precision=0,
+                    label="Trim start frame (0 = first frame)",
+                    interactive=True,
+                )
+                trim_end_frame_input = gr.Number(
+                    value=0,
+                    precision=0,
+                    label="Trim end frame, exclusive (0 = video end)",
                     interactive=True,
                 )
                 max_frames_input = gr.Number(
@@ -263,6 +279,8 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
             video_in_drawer=video_in_drawer,
             video_in=video_in,
             tracking_resolution=tracking_resolution,
+            trim_start_frame_input=trim_start_frame_input,
+            trim_end_frame_input=trim_end_frame_input,
             max_frames_input=max_frames_input,
             skip_frames_input=skip_frames_input,
             submit=submit,

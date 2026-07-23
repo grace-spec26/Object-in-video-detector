@@ -57,6 +57,7 @@ try:
         parse_max_frame_count,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
+        trim_video_to_frame_range,
     )
 except ImportError:
     from refinement_helpers import (
@@ -82,6 +83,7 @@ except ImportError:
         parse_max_frame_count,
         resize_video_for_tracking,
         sample_video_for_frame_skip,
+        trim_video_to_frame_range,
     )
 
 
@@ -805,7 +807,14 @@ def clear_all_refinement_edits(frame_num, tracked_video_preview, refinement_quer
     )
 
 
-def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_frames):
+def preprocess_video_input(
+    video_path,
+    tracking_resolution,
+    max_frames,
+    skip_frames,
+    trim_start_frame,
+    trim_end_frame,
+):
     if video_path is None:
         raise gr.Error("Please upload a video before submitting.")
 
@@ -822,10 +831,21 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
     video_fps = source_video_fps
     num_frames = video_arr.shape[0]
     original_num_frames = num_frames
+    try:
+        video_arr, trim_start_index, trim_end_index = trim_video_to_frame_range(
+            video_arr,
+            start_frame=trim_start_frame,
+            end_frame=trim_end_frame,
+        )
+    except ValueError as exc:
+        raise gr.Error(str(exc)) from exc
+
+    num_frames = video_arr.shape[0]
+    trimmed_source_frames = num_frames
     loaded_source_frames = num_frames
     if max_frames_to_load and num_frames > max_frames_to_load:
         gr.Warning(
-            f"Only the first {max_frames_to_load} of {original_num_frames} frames will be used.",
+            f"Only the first {max_frames_to_load} of {trimmed_source_frames} trimmed frame(s) will be used.",
             duration=5,
         )
         video_arr = video_arr[:max_frames_to_load]
@@ -858,26 +878,44 @@ def preprocess_video_input(video_path, tracking_resolution, max_frames, skip_fra
 
     preview_video = np.array(preview_video)
     input_video = np.array(input_video)
-    
+
     interactive = True
 
-    load_status = f"Loaded {num_frames} frames for point selection."
-    if loaded_source_frames != original_num_frames and sampling_stride > 1:
-        load_status = (
-            f"Loaded first {loaded_source_frames} of {original_num_frames} source frames, then sampled "
-            f"to {num_frames} frames by skipping {frame_skip_count} frame(s) after each loaded frame. "
-            "Set Max frames to load to 0 to use the full video."
+    load_status_parts = []
+    if trim_start_index != 0 or trim_end_index != original_num_frames:
+        load_status_parts.append(
+            (
+                f"Trimmed source video to frames {trim_start_index}-{trim_end_index - 1} "
+                f"({trimmed_source_frames} frame(s))."
+            )
         )
-    elif loaded_source_frames != original_num_frames:
-        load_status = (
-            f"Loaded first {loaded_source_frames} of {original_num_frames} frames for point selection. "
-            "Set Max frames to load to 0 to use the full video."
+
+    if loaded_source_frames != trimmed_source_frames and sampling_stride > 1:
+        load_status_parts.append(
+            (
+                f"Loaded first {loaded_source_frames} of {trimmed_source_frames} trimmed frame(s), "
+                "then sampled "
+                f"to {num_frames} frame(s) by skipping {frame_skip_count} frame(s) after each loaded frame. "
+                "Set Max frames to load to 0 to use the full trimmed video."
+            )
+        )
+    elif loaded_source_frames != trimmed_source_frames:
+        load_status_parts.append(
+            (
+                f"Loaded first {loaded_source_frames} of {trimmed_source_frames} trimmed frame(s) for point selection. "
+                "Set Max frames to load to 0 to use the full trimmed video."
+            )
         )
     elif sampling_stride > 1:
-        load_status = (
-            f"Loaded {num_frames} sampled frames for point selection by skipping "
-            f"{frame_skip_count} frame(s) after each loaded frame."
+        load_status_parts.append(
+            (
+                f"Loaded {num_frames} sampled frame(s) for point selection by skipping "
+                f"{frame_skip_count} frame(s) after each loaded frame."
+            )
         )
+    else:
+        load_status_parts.append(f"Loaded {num_frames} frame(s) for point selection.")
+    load_status = " ".join(load_status_parts)
 
     return (
         video_arr, # Original video
@@ -1098,6 +1136,8 @@ def configure_demo_callbacks(layout):
     video_in_drawer = layout.video_in_drawer
     video_in = layout.video_in
     tracking_resolution = layout.tracking_resolution
+    trim_start_frame_input = layout.trim_start_frame_input
+    trim_end_frame_input = layout.trim_end_frame_input
     max_frames_input = layout.max_frames_input
     skip_frames_input = layout.skip_frames_input
     submit = layout.submit
@@ -1134,7 +1174,14 @@ def configure_demo_callbacks(layout):
 
     submit.click(
         fn = preprocess_video_input, 
-        inputs = [video_in, tracking_resolution, max_frames_input, skip_frames_input],
+        inputs = [
+            video_in,
+            tracking_resolution,
+            max_frames_input,
+            skip_frames_input,
+            trim_start_frame_input,
+            trim_end_frame_input,
+        ],
         outputs = [
             video,
             video_preview,

@@ -152,6 +152,21 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIsNotNone(match)
         self.assertIn("skip_frames_input", match.group(1))
 
+    def test_first_step_uses_stable_file_upload_with_server_side_trim_inputs(self):
+        app_source = read_combined_source()
+        first_step_block = app_source.split("## Second step:", maxsplit=1)[0]
+        match = re.search(r"submit\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIn("video_in = gr.File", first_step_block)
+        self.assertNotIn("video_in = gr.Video", first_step_block)
+        self.assertIn("trim_start_frame_input = gr.Number", first_step_block)
+        self.assertIn("trim_end_frame_input = gr.Number", first_step_block)
+        self.assertIn('label="Trim start frame (0 = first frame)"', first_step_block)
+        self.assertIn('label="Trim end frame, exclusive (0 = video end)"', first_step_block)
+        self.assertIsNotNone(match)
+        self.assertIn("trim_start_frame_input", match.group(1))
+        self.assertIn("trim_end_frame_input", match.group(1))
+
     def test_second_step_keeps_single_frame_sam_preview_in_query_block(self):
         app_source = read_combined_source()
         second_step_block = app_source.split("## Third step:", maxsplit=1)[0]

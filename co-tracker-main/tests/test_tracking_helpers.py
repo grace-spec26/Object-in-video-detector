@@ -24,6 +24,7 @@ from tracking_helpers import (  # noqa: E402
     save_sam_video_review,
     should_process_frame_for_skip,
     subsample_video_tensor,
+    trim_video_to_frame_range,
 )
 
 
@@ -142,6 +143,19 @@ class TrackingHelpersTest(unittest.TestCase):
         np.testing.assert_array_equal(sampled, video[[0, 3, 6]])
         self.assertEqual(effective_fps, 10.0)
         self.assertEqual(stride, 3)
+
+    def test_trim_video_to_frame_range_slices_before_later_sampling(self):
+        video = np.arange(8 * 2 * 2 * 3, dtype=np.uint8).reshape(8, 2, 2, 3)
+
+        trimmed, trim_start, trim_end = trim_video_to_frame_range(
+            video,
+            start_frame=2,
+            end_frame=6,
+        )
+
+        np.testing.assert_array_equal(trimmed, video[2:6])
+        self.assertEqual(trim_start, 2)
+        self.assertEqual(trim_end, 6)
 
     def test_should_process_frame_for_skip_keeps_first_then_skips_n_frames(self):
         self.assertEqual(
