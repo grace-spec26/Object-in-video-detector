@@ -129,6 +129,42 @@ class FakeSamPredictor:
 
 
 class GradioSamPreviewTest(unittest.TestCase):
+    def test_selected_frame_yolo_export_saves_empty_label_when_no_points_are_visible(self):
+        video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
+        video_frames[1, :, :] = [40, 80, 120]
+        video_preview = np.zeros((2, 10, 20, 3), dtype=np.uint8)
+
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            sam_preview_service,
+            "get_sam_preview_runtime",
+            side_effect=AssertionError("SAM should not run for no-target frames"),
+        ):
+            status = app.export_selected_sam_frame_as_yolo_train(
+                video_frames,
+                video_preview,
+                [[] for _ in range(2)],
+                None,
+                None,
+                None,
+                1,
+                0,
+                None,
+                "sam2.1_hiera_small.pt",
+                [[] for _ in range(2)],
+                [],
+                tmp,
+            )
+
+            image_path = Path(tmp) / "images" / "train" / "train_img00001.jpg"
+            label_path = Path(tmp) / "labels" / "train" / "train_img00001.txt"
+            self.assertTrue(image_path.exists())
+            self.assertTrue(label_path.exists())
+            self.assertEqual(label_path.read_bytes(), b"")
+
+        self.assertIn("Saved selected frame 1", status)
+        self.assertIn("no target object", status)
+        self.assertIn("empty YOLO label", status)
+
     def test_selected_frame_yolo_export_uses_sam_mask_and_requested_split(self):
         video_frames = np.zeros((2, 20, 40, 3), dtype=np.uint8)
         video_frames[1, :, :] = [40, 80, 120]

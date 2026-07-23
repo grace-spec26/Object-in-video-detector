@@ -1008,6 +1008,44 @@ def preview_sam_for_selected_frame_with_progress(
     return preview, current_sam_model_progress_html(sam_model), status
 
 
+def save_selected_sam_frame_yolo_export(
+    frame,
+    yolo_dataset_output_dir,
+    split,
+    mask=None,
+    allow_empty_label=False,
+):
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.insert(0, str(PROJECT_ROOT))
+    from export_yolo_segmentation_dataset import export_single_mask_frame_to_yolo_split
+
+    if mask is None:
+        mask = np.zeros(frame.shape[:2], dtype=bool)
+    return export_single_mask_frame_to_yolo_split(
+        frame=frame,
+        mask=mask,
+        output_dir=yolo_dataset_output_dir or PROJECT_ROOT / "dataset",
+        split=split,
+        min_area_px=20,
+        approx_epsilon=2.0,
+        allow_empty_label=allow_empty_label,
+    )
+
+
+def format_selected_sam_frame_yolo_status(frame_index, result):
+    if result.total_wound_instances == 0:
+        return (
+            f"Saved selected frame {frame_index} as YOLO custom {result.split} "
+            f"with no target object: {result.image_path} and empty YOLO label "
+            f"{result.label_path}."
+        )
+    return (
+        f"Saved selected frame {frame_index} as YOLO custom {result.split}: "
+        f"{result.image_path} and {result.label_path} with "
+        f"{result.total_wound_instances} wound polygon(s)."
+    )
+
+
 def export_selected_sam_frame_as_yolo_split(
     video_frames,
     video_preview_array,
@@ -1046,43 +1084,51 @@ def export_selected_sam_frame_as_yolo_split(
         tracked_prompt_sources=tracked_prompt_sources,
         refinement_source_frames=refinement_source_frames,
     )
-    if len(point_coords) == 0:
-        message = f"No selected or visible tracked points on frame {frame_index}."
-        gr.Warning(message, duration=5)
-        return message
-    if not np.any(point_labels == 1):
-        message = f"SAM needs at least one visible positive point on frame {frame_index}."
-        gr.Warning(message, duration=5)
-        return message
-
     frame = as_uint8_rgb_frame(video_frames[frame_index])
+    if len(point_coords) == 0:
+        try:
+            result = save_selected_sam_frame_yolo_export(
+                frame,
+                yolo_dataset_output_dir,
+                split,
+                allow_empty_label=True,
+            )
+        except Exception as exc:
+            message = f"Failed to save selected frame as YOLO custom {split}: {exc}"
+            gr.Warning(message, duration=5)
+            return message
+        return format_selected_sam_frame_yolo_status(frame_index, result)
+    if not np.any(point_labels == 1):
+        try:
+            result = save_selected_sam_frame_yolo_export(
+                frame,
+                yolo_dataset_output_dir,
+                split,
+                allow_empty_label=True,
+            )
+        except Exception as exc:
+            message = f"Failed to save selected frame as YOLO custom {split}: {exc}"
+            gr.Warning(message, duration=5)
+            return message
+        return format_selected_sam_frame_yolo_status(frame_index, result)
+
     try:
         runtime = get_sam_preview_runtime(sam_model)
         masks, scores, _ = predict_sam_preview_mask(runtime, frame, point_coords, point_labels)
         best_mask = masks[select_sam_preview_mask(masks, scores, point_coords, point_labels)]
-
-        if str(PROJECT_ROOT) not in sys.path:
-            sys.path.insert(0, str(PROJECT_ROOT))
-        from export_yolo_segmentation_dataset import export_single_mask_frame_to_yolo_split
-
-        result = export_single_mask_frame_to_yolo_split(
-            frame=frame,
+        result = save_selected_sam_frame_yolo_export(
+            frame,
+            yolo_dataset_output_dir,
+            split,
             mask=best_mask,
-            output_dir=yolo_dataset_output_dir or PROJECT_ROOT / "dataset",
-            split=split,
-            min_area_px=20,
-            approx_epsilon=2.0,
+            allow_empty_label=True,
         )
     except Exception as exc:
         message = f"Failed to save selected frame as YOLO custom {split}: {exc}"
         gr.Warning(message, duration=5)
         return message
 
-    return (
-        f"Saved selected frame {frame_index} as YOLO custom {result.split}: "
-        f"{result.image_path} and {result.label_path} with "
-        f"{result.total_wound_instances} wound polygon(s)."
-    )
+    return format_selected_sam_frame_yolo_status(frame_index, result)
 
 
 def export_selected_sam_frame_as_yolo_train(

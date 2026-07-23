@@ -158,6 +158,7 @@ def export_single_mask_frame_to_yolo_split(
     min_area_px: int = 20,
     approx_epsilon: float = 2.0,
     image_quality: int = 95,
+    allow_empty_label: bool = False,
 ) -> SingleFrameExportResult:
     """Append one frame and its binary mask as a YOLO segmentation item."""
 
@@ -179,7 +180,7 @@ def export_single_mask_frame_to_yolo_split(
     )
     if frame_array.shape[0] != height or frame_array.shape[1] != width:
         raise ValueError("Frame and mask dimensions must match.")
-    if not polygons:
+    if not polygons and not allow_empty_label:
         raise ValueError("SAM mask did not contain any valid YOLO polygons.")
 
     dataset_root = Path(output_dir).expanduser()
@@ -210,7 +211,8 @@ def export_single_mask_frame_to_yolo_split(
             for polygon in polygons:
                 coords = " ".join(f"{value:.6f}" for point in polygon for value in point)
                 rows.append(f"0 {coords}")
-            label_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+            label_text = "\n".join(rows) + "\n" if rows else ""
+            label_path.write_text(label_text, encoding="utf-8")
             created_paths.append(label_path)
             _write_dataset_yaml(dataset_root)
         except Exception:
