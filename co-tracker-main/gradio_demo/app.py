@@ -103,6 +103,7 @@ try:
         SAM_MODEL_PROGRESS_READY,
         SAM_VIDEO_PROGRESS_READY,
         current_sam_model_progress_html,
+        download_all_sam_image_models_with_progress,
         draw_query_point,
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
@@ -136,6 +137,7 @@ except ImportError:
         SAM_MODEL_PROGRESS_READY,
         SAM_VIDEO_PROGRESS_READY,
         current_sam_model_progress_html,
+        download_all_sam_image_models_with_progress,
         draw_query_point,
         get_sam_preview_runtime,
         get_sam_preview_runtime_if_ready,
@@ -1189,6 +1191,7 @@ def configure_demo_callbacks(layout):
     output_video = layout.output_video
     no_wound_export_button = layout.no_wound_export_button
     sam_model_dropdown = layout.sam_model_dropdown
+    download_sam_models_button = layout.download_sam_models_button
     sam_model_loading_progress = layout.sam_model_loading_progress
     sam_preview_button = layout.sam_preview_button
     sam_preview_image = layout.sam_preview_image
@@ -1321,6 +1324,16 @@ def configure_demo_callbacks(layout):
             export_status,
         ],
         queue = False,
+    )
+
+    download_sam_models_button.click(
+        fn = download_all_sam_image_models_with_progress,
+        inputs = [],
+        outputs = [
+            sam_model_loading_progress,
+            processed_sam_model_loading_progress,
+            export_status,
+        ],
     )
 
     current_frame.select(

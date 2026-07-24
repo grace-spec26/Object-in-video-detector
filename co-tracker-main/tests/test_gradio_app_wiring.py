@@ -291,6 +291,21 @@ class GradioAppWiringTest(unittest.TestCase):
             third_step_block.index("processed_sam_preview_image = gr.Image"),
         )
 
+    def test_second_step_has_download_all_sam_models_button_in_sam_panel(self):
+        app_source = read_combined_source()
+        second_step_block = app_source.split("## Third step:", maxsplit=1)[0]
+
+        self.assertIn("download_sam_models_button = gr.Button", second_step_block)
+        self.assertIn('"Download SAM Models"', second_step_block)
+        self.assertLess(
+            second_step_block.index("sam_model_dropdown = gr.Dropdown"),
+            second_step_block.index("download_sam_models_button = gr.Button"),
+        )
+        self.assertLess(
+            second_step_block.index("download_sam_models_button = gr.Button"),
+            second_step_block.index("sam_model_loading_progress = gr.HTML"),
+        )
+
     def test_sam_image_model_dropdowns_reset_preview_and_start_preload_on_change(self):
         app_source = read_combined_source()
         single_frame_change = re.search(
@@ -316,6 +331,16 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("processed_sam_model_loading_progress", processed_change.group(1))
         self.assertIn("export_status", processed_change.group(1))
         self.assertIn("queue = False", processed_change.group(1))
+
+    def test_download_all_sam_models_button_streams_to_both_progress_bars(self):
+        app_source = read_combined_source()
+        match = re.search(r"download_sam_models_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("fn = download_all_sam_image_models_with_progress", match.group(1))
+        self.assertIn("sam_model_loading_progress", match.group(1))
+        self.assertIn("processed_sam_model_loading_progress", match.group(1))
+        self.assertIn("export_status", match.group(1))
 
     def test_submit_track_and_reprocess_update_sam_model_progress_bars(self):
         app_source = read_combined_source()

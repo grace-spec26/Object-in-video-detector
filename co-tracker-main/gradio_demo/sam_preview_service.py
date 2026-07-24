@@ -239,6 +239,72 @@ def stream_sam_model_loading_progress(sam_model):
         time.sleep(1)
 
 
+def download_all_sam_image_models_with_progress():
+    """Download checkpoints and load all image SAM runtimes sequentially."""
+    model_names = list(SAM_IMAGE_MODEL_CHOICES)
+    total_models = len(model_names)
+    progress = format_sam_model_progress_html(
+        0,
+        f"Starting SAM image model downloads (0/{total_models})",
+    )
+    yield progress, progress, f"Loading {total_models} SAM image model runtime(s) sequentially."
+
+    loaded_labels = []
+    for model_index, model_name in enumerate(model_names, start=1):
+        try:
+            model_option = resolve_sam_preview_model_option(model_name)
+            model_label = model_option.get("label", model_name)
+        except Exception:
+            model_label = model_name
+
+        completed_before_model = model_index - 1
+        progress = format_sam_model_progress_html(
+            (completed_before_model / max(1, total_models)) * 100,
+            f"Loading {model_label} ({model_index}/{total_models})",
+        )
+        yield (
+            progress,
+            progress,
+            f"Downloading checkpoint and loading runtime for {model_label} ({model_index}/{total_models}).",
+        )
+
+        try:
+            runtime = get_sam_preview_runtime(model_name)
+        except Exception as exc:
+            message = (
+                f"Failed to download/load {model_label} ({model_index}/{total_models}): {exc}"
+            )
+            gr.Warning(message, duration=5)
+            progress = format_sam_model_progress_html(
+                (completed_before_model / max(1, total_models)) * 100,
+                message,
+                "#dc2626",
+            )
+            yield progress, progress, message
+            return
+
+        loaded_labels.append(f"{runtime['model_label']} on {runtime['device']}")
+        progress = format_sam_model_progress_html(
+            (model_index / max(1, total_models)) * 100,
+            f"Loaded {runtime['model_label']} ({model_index}/{total_models})",
+        )
+        yield (
+            progress,
+            progress,
+            f"Loaded {runtime['model_label']} on {runtime['device']} ({model_index}/{total_models}).",
+        )
+
+    progress = format_sam_model_progress_html(
+        100,
+        f"All {total_models} SAM image models loaded",
+    )
+    yield (
+        progress,
+        progress,
+        f"Loaded {total_models} SAM image model runtime(s): {', '.join(loaded_labels)}.",
+    )
+
+
 def draw_query_point(frame, x, y, point_label):
     point_color = POINT_COLORS.get(int(point_label), POINT_COLORS[1])
     x, y = int(round(x)), int(round(y))

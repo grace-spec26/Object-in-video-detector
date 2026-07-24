@@ -171,12 +171,17 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
                 no_wound_export_button = gr.Button("Export No-Wound Frames to YOLO", interactive=False)
 
             with gr.Column():
-                sam_model_dropdown = gr.Dropdown(
-                    choices=list(sam_image_model_choices),
-                    value=default_sam_image_model,
-                    label="SAM Image Model",
-                    interactive=False,
-                )
+                with gr.Row():
+                    sam_model_dropdown = gr.Dropdown(
+                        choices=list(sam_image_model_choices),
+                        value=default_sam_image_model,
+                        label="SAM Image Model",
+                        interactive=False,
+                    )
+                    download_sam_models_button = gr.Button(
+                        "Download SAM Models",
+                        interactive=True,
+                    )
                 sam_model_loading_progress = gr.HTML(
                     value=sam_model_progress_ready,
                     show_label=False,
@@ -295,6 +300,7 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
             output_video=output_video,
             no_wound_export_button=no_wound_export_button,
             sam_model_dropdown=sam_model_dropdown,
+            download_sam_models_button=download_sam_models_button,
             sam_model_loading_progress=sam_model_loading_progress,
             sam_preview_button=sam_preview_button,
             sam_preview_image=sam_preview_image,

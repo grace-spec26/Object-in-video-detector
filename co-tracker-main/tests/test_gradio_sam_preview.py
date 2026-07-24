@@ -761,6 +761,25 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertEqual(lock_was_available_during_load, [True])
         self.assertEqual(runtime["model_label"], "SAM2.1 Hiera Large")
 
+    def test_download_all_sam_image_models_loads_every_runtime_sequentially(self):
+        calls = []
+
+        def fake_runtime(model_name):
+            calls.append(model_name)
+            return {
+                "model_label": f"Loaded {model_name}",
+                "device": "cpu",
+            }
+
+        with mock.patch.object(sam_preview_service, "get_sam_preview_runtime", side_effect=fake_runtime):
+            results = list(app.download_all_sam_image_models_with_progress())
+
+        self.assertEqual(calls, list(app.SAM_IMAGE_MODEL_CHOICES))
+        final_single_progress, final_processed_progress, final_status = results[-1]
+        self.assertEqual(final_single_progress, final_processed_progress)
+        self.assertIn("All 4 SAM image models loaded", final_single_progress)
+        self.assertIn("Loaded 4 SAM image model runtime(s)", final_status)
+
     def test_processed_preview_scales_refinement_points_from_tracked_preview_space(self):
         video_frames = np.zeros((2, 100, 200, 3), dtype=np.uint8)
         video_preview = np.zeros((2, 50, 100, 3), dtype=np.uint8)
