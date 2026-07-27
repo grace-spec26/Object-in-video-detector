@@ -9,6 +9,41 @@ SAM_SERVICE_PATH = APP_PATH.parent / "sam_preview_service.py"
 UI_LAYOUT_PATH = APP_PATH.parent / "ui_layout.py"
 
 
+class DummyGradioComponent:
+    def __init__(self, *args, **kwargs):
+        self.args = args
+        self.kwargs = kwargs
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+
+class DummyGradio:
+    Accordion = DummyGradioComponent
+    Blocks = DummyGradioComponent
+    Button = DummyGradioComponent
+    Column = DummyGradioComponent
+    Dropdown = DummyGradioComponent
+    File = DummyGradioComponent
+    HTML = DummyGradioComponent
+    Image = DummyGradioComponent
+    Markdown = DummyGradioComponent
+    Number = DummyGradioComponent
+    Radio = DummyGradioComponent
+    Row = DummyGradioComponent
+    Slider = DummyGradioComponent
+    State = DummyGradioComponent
+    Textbox = DummyGradioComponent
+    Video = DummyGradioComponent
+
+    @staticmethod
+    def Examples(*args, **kwargs):
+        return DummyGradioComponent(*args, **kwargs)
+
+
 def read_combined_source():
     return "\n".join(
         (
@@ -211,6 +246,87 @@ class GradioAppWiringTest(unittest.TestCase):
 
         self.assertIn("hydra-core>=1.3.2", requirements)
         self.assertIn("iopath>=0.1.10", requirements)
+
+    def test_cotracker_gradio_requirements_include_ultralytics_for_yolo_evaluation(self):
+        requirements_path = APP_PATH.parent / "requirements.txt"
+        requirements = requirements_path.read_text()
+
+        self.assertRegex(requirements, r"(?m)^ultralytics\b")
+
+    def test_fourth_step_has_yolo_evaluation_controls(self):
+        layout_source = UI_LAYOUT_PATH.read_text()
+
+        self.assertIn("## Fourth step: Evaluation of model.", layout_source)
+        fourth_step_block = layout_source.split("## Fourth step: Evaluation of model.", maxsplit=1)[1]
+        self.assertIn("evaluation_video_input = gr.File", fourth_step_block)
+        self.assertIn('label="Evaluation Video"', fourth_step_block)
+        self.assertIn("evaluation_yolo_model_input = gr.File", fourth_step_block)
+        self.assertIn('label="Trained YOLO Model"', fourth_step_block)
+        self.assertIn('evaluation_preview_button = gr.Button("Preview model on video"', fourth_step_block)
+        self.assertIn("evaluation_progress = gr.HTML", fourth_step_block)
+        self.assertIn("evaluation_output_video = gr.Video", fourth_step_block)
+        self.assertIn('label="YOLO Model Preview"', fourth_step_block)
+
+    def test_fourth_step_components_are_returned_from_layout_namespace(self):
+        layout_source = UI_LAYOUT_PATH.read_text()
+
+        for component_name in (
+            "evaluation_video_input",
+            "evaluation_yolo_model_input",
+            "evaluation_preview_button",
+            "evaluation_progress",
+            "evaluation_output_video",
+        ):
+            self.assertIn(f"{component_name}={component_name}", layout_source)
+
+    def test_yolo_evaluation_preview_button_is_wired_to_service(self):
+        app_source = APP_PATH.read_text()
+
+        self.assertIn("from yolo_evaluation_service import", app_source)
+        match = re.search(r"evaluation_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn("fn = preview_yolo_model_on_video", match.group(1))
+        self.assertIn("evaluation_video_input", match.group(1))
+        self.assertIn("evaluation_yolo_model_input", match.group(1))
+        self.assertIn("evaluation_progress", match.group(1))
+        self.assertIn("evaluation_output_video", match.group(1))
+
+    def test_layout_runtime_exposes_fourth_step_components_to_callbacks(self):
+        ui_layout_namespace = runpy.run_path(UI_LAYOUT_PATH)
+        captured = {}
+
+        def capture_callbacks(components):
+            captured["components"] = components
+
+        layout = ui_layout_namespace["build_demo_layout"](
+            DummyGradio,
+            base_dir=APP_PATH.parent,
+            default_tracking_resolution="512",
+            tracking_resolution_options=["512"],
+            default_max_frames=0,
+            point_type_choices=["Positive (+)", "Negative (-)"],
+            positive_point_choice="Positive (+)",
+            point_edit_mode_choices=["Add", "Delete nearest"],
+            point_add_mode="Add",
+            sam_image_model_choices=["sam2.1_hiera_small.pt"],
+            default_sam_image_model="sam2.1_hiera_small.pt",
+            sam_model_progress_ready="<p>SAM ready</p>",
+            refinement_edit_mode_choices=["Add", "Delete nearest"],
+            refinement_add_mode="Add",
+            default_yolo_dataset_dir=Path("dataset"),
+            yolo_evaluation_progress_ready="<p>YOLO ready</p>",
+            configure_callbacks=capture_callbacks,
+        )
+
+        self.assertIs(layout, captured["components"])
+        self.assertEqual(layout.evaluation_video_input.kwargs["label"], "Evaluation Video")
+        self.assertEqual(layout.evaluation_video_input.kwargs["type"], "filepath")
+        self.assertEqual(layout.evaluation_yolo_model_input.kwargs["label"], "Trained YOLO Model")
+        self.assertEqual(layout.evaluation_yolo_model_input.kwargs["file_types"], [".pt"])
+        self.assertEqual(layout.evaluation_preview_button.args[0], "Preview model on video")
+        self.assertEqual(layout.evaluation_progress.kwargs["value"], "<p>YOLO ready</p>")
+        self.assertEqual(layout.evaluation_output_video.kwargs["label"], "YOLO Model Preview")
 
     def test_frame_slider_maximum_keeps_gradio_slider_range_non_empty(self):
         ui_layout_namespace = runpy.run_path(UI_LAYOUT_PATH)

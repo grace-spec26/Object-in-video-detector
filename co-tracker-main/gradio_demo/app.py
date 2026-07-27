@@ -171,6 +171,18 @@ except ImportError:
     from tracking_service import paint_point_track, run_cotracker_tracking
 
 
+try:
+    from .yolo_evaluation_service import (
+        YOLO_EVALUATION_PROGRESS_READY,
+        preview_yolo_model_on_video,
+    )
+except ImportError:
+    from yolo_evaluation_service import (
+        YOLO_EVALUATION_PROGRESS_READY,
+        preview_yolo_model_on_video,
+    )
+
+
 def patch_gradio_predict_body():
     """Allow Gradio 3.35 request models to run with Pydantic 2."""
     fields = getattr(gradio_data_classes.PredictBody, "model_fields", None)
@@ -1211,6 +1223,11 @@ def configure_demo_callbacks(layout):
     save_sam_frame_train_button = layout.save_sam_frame_train_button
     save_sam_frame_val_button = layout.save_sam_frame_val_button
     yolo_dataset_output_dir = layout.yolo_dataset_output_dir
+    evaluation_video_input = layout.evaluation_video_input
+    evaluation_yolo_model_input = layout.evaluation_yolo_model_input
+    evaluation_preview_button = layout.evaluation_preview_button
+    evaluation_progress = layout.evaluation_progress
+    evaluation_output_video = layout.evaluation_output_video
 
     submit.click(
         fn = preprocess_video_input, 
@@ -1667,6 +1684,18 @@ def configure_demo_callbacks(layout):
         queue = False,
     )
 
+    evaluation_preview_button.click(
+        fn = preview_yolo_model_on_video,
+        inputs = [
+            evaluation_video_input,
+            evaluation_yolo_model_input,
+        ],
+        outputs = [
+            evaluation_progress,
+            evaluation_output_video,
+        ],
+    )
+
 
 
 demo_layout = build_demo_layout(
@@ -1685,6 +1714,7 @@ demo_layout = build_demo_layout(
     refinement_edit_mode_choices=REFINEMENT_EDIT_MODE_CHOICES,
     refinement_add_mode=REFINEMENT_ADD_MODE,
     default_yolo_dataset_dir=DEFAULT_YOLO_DATASET_DIR,
+    yolo_evaluation_progress_ready=YOLO_EVALUATION_PROGRESS_READY,
     configure_callbacks=configure_demo_callbacks,
 )
 demo = demo_layout.demo

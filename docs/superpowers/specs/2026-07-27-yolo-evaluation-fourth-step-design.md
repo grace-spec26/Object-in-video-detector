@@ -55,13 +55,13 @@ Responsibilities:
 
 - Validate that both inputs exist.
 - Validate the model path ends with `.pt`.
-- Read the video frames with `mediapy.read_video`.
+- Stream video frames with `cv2.VideoCapture` in the default runtime path so evaluation videos do not need to be loaded fully into memory.
 - Load the YOLO model with `ultralytics.YOLO`.
 - Run inference frame by frame.
 - Draw bounding boxes, class labels, and confidence scores onto RGB frames.
-- Write an MP4 preview to `co-tracker-main/gradio_demo/tmp/<uuid>.mp4`.
+- Write an MP4 preview to `co-tracker-main/gradio_demo/tmp/<uuid>.mp4` with `cv2.VideoWriter`.
 - Yield progress after each frame, including `processed / total` and percent.
-- Yield final output as `(progress_html, output_video_path, status_text)`.
+- Yield final output as `(progress_html, output_video_path)`, with user-readable status embedded in the progress HTML.
 
 The service should not depend on Gradio component objects, but it may raise `gr.Error` or return user-readable status strings through the app callback, matching nearby service patterns.
 
@@ -71,7 +71,7 @@ The service should not depend on Gradio component objects, but it may raise `gr.
 2. User clicks `Preview model on video`.
 3. `app.py` callback calls `preview_yolo_model_on_video()`.
 4. The generator yields an initial progress state before loading the model.
-5. For each frame, YOLO returns detection boxes; the helper draws detections onto a copy of the frame.
+5. For each streamed frame, YOLO returns detection boxes; the helper draws detections onto a copy of the frame.
 6. The helper writes the preview MP4 and returns its path to the Gradio `gr.Video` component.
 
 This flow is independent from the first three steps. A user can evaluate a trained YOLO model without rerunning CoTracker or SAM in the same session.

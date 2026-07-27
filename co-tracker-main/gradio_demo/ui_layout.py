@@ -43,6 +43,7 @@ def build_demo_layout(
     refinement_edit_mode_choices,
     refinement_add_mode,
     default_yolo_dataset_dir,
+    yolo_evaluation_progress_ready,
     configure_callbacks=None,
 ):
     with gr.Blocks() as demo:
@@ -264,6 +265,32 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
                     lines=3,
                 )
 
+        gr.Markdown("## Fourth step: Evaluation of model.")
+        with gr.Row():
+            with gr.Column():
+                evaluation_video_input = gr.File(
+                    label="Evaluation Video",
+                    file_types=["video", ".mp4", ".mov", ".avi", ".mkv"],
+                    type="filepath",
+                )
+                evaluation_yolo_model_input = gr.File(
+                    label="Trained YOLO Model",
+                    file_types=[".pt"],
+                    type="filepath",
+                )
+                evaluation_preview_button = gr.Button("Preview model on video", interactive=True)
+                evaluation_progress = gr.HTML(
+                    value=yolo_evaluation_progress_ready,
+                    show_label=False,
+                )
+            with gr.Column():
+                evaluation_output_video = gr.Video(
+                    label="YOLO Model Preview",
+                    interactive=False,
+                    autoplay=True,
+                    loop=True,
+                )
+
         components = SimpleNamespace(
             demo=demo,
             video=video,
@@ -320,6 +347,11 @@ This interface builds on CoTracker point tracking and connects it with MobileSAM
             save_sam_frame_train_button=save_sam_frame_train_button,
             save_sam_frame_val_button=save_sam_frame_val_button,
             yolo_dataset_output_dir=yolo_dataset_output_dir,
+            evaluation_video_input=evaluation_video_input,
+            evaluation_yolo_model_input=evaluation_yolo_model_input,
+            evaluation_preview_button=evaluation_preview_button,
+            evaluation_progress=evaluation_progress,
+            evaluation_output_video=evaluation_output_video,
         )
 
         if configure_callbacks is not None:
