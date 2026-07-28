@@ -292,13 +292,13 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("evaluation_progress", match.group(1))
         self.assertIn("evaluation_output_video", match.group(1))
 
-    def test_yolo_evaluation_preview_button_runs_without_gradio_queue(self):
+    def test_yolo_evaluation_preview_button_allows_gradio_queue_for_generator_progress(self):
         app_source = APP_PATH.read_text()
         match = re.search(r"evaluation_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
 
         self.assertIsNotNone(match)
         self.assertIn("fn = preview_yolo_model_on_video", match.group(1))
-        self.assertIn("queue = False", match.group(1))
+        self.assertNotIn("queue = False", match.group(1))
 
     def test_layout_runtime_exposes_fourth_step_components_to_callbacks(self):
         ui_layout_namespace = runpy.run_path(UI_LAYOUT_PATH)

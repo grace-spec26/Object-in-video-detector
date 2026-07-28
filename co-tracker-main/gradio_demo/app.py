@@ -1694,7 +1694,6 @@ def configure_demo_callbacks(layout):
             evaluation_progress,
             evaluation_output_video,
         ],
-        queue = False,
     )
 
 
