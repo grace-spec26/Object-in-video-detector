@@ -8,6 +8,23 @@ os.environ["GRADIO_SKIP_PYI_GENERATION"] = "1"
 os.environ.setdefault("GRADIO_ANALYTICS_ENABLED", "False")
 os.environ.setdefault("PYDANTIC_DISABLE_PLUGINS", "__all__")
 
+
+LOCAL_GRADIO_STARTUP_HOSTS = ("127.0.0.1", "localhost", "::1")
+
+
+def ensure_localhost_no_proxy():
+    for env_name in ("NO_PROXY", "no_proxy"):
+        existing_entries = [
+            entry.strip()
+            for entry in os.environ.get(env_name, "").split(",")
+            if entry.strip()
+        ]
+        for host in LOCAL_GRADIO_STARTUP_HOSTS:
+            if host not in existing_entries:
+                existing_entries.append(host)
+        os.environ[env_name] = ",".join(existing_entries)
+
+
 import importlib.metadata as importlib_metadata
 import inspect
 from contextlib import contextmanager
@@ -1694,6 +1711,7 @@ def configure_demo_callbacks(layout):
             evaluation_progress,
             evaluation_output_video,
         ],
+        show_progress = "hidden",
     )
 
 
@@ -1719,6 +1737,7 @@ demo_layout = build_demo_layout(
 )
 demo = demo_layout.demo
 
+ensure_localhost_no_proxy()
 
 launch_kwargs = {
     "server_name": "127.0.0.1",

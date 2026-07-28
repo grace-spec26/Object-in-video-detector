@@ -250,6 +250,45 @@ class YoloEvaluationServiceTest(unittest.TestCase):
         self.assertEqual(results[-1][1], created_writers[0].path)
         self.assertIn("2/2 frame", results[-1][0])
 
+    def test_long_video_preview_throttles_queued_progress_updates(self):
+        frames_bgr = np.zeros((300, 8, 10, 3), dtype=np.uint8)
+        fake_capture = FakeCv2Capture(frames_bgr, fps=30.0)
+        fake_model = FakeYoloModel()
+        created_writers = []
+
+        def fake_writer_factory(path, fourcc, fps, size):
+            writer = FakeCv2Writer(path, fourcc, fps, size)
+            created_writers.append(writer)
+            return writer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            video_path = Path(tmp) / "clip.mp4"
+            model_path = Path(tmp) / "best.pt"
+            video_path.write_bytes(b"video")
+            model_path.write_bytes(b"weights")
+
+            with mock.patch.object(service.mediapy, "read_video", side_effect=AssertionError("do not load full video")), \
+                mock.patch.object(service.cv2, "VideoCapture", return_value=fake_capture), \
+                mock.patch.object(service.cv2, "VideoWriter", side_effect=fake_writer_factory), \
+                mock.patch.object(service.cv2, "VideoWriter_fourcc", return_value=1234):
+                results = list(
+                    service.preview_yolo_model_on_video(
+                        str(video_path),
+                        str(model_path),
+                        model_loader=lambda path: fake_model,
+                        output_dir=tmp,
+                    )
+                )
+
+        progress_html = "\n".join(result[0] for result in results)
+        self.assertEqual(len(fake_model.calls), 300)
+        self.assertLessEqual(len(results), 120)
+        self.assertIn("0/300 frame", progress_html)
+        self.assertIn("1/300 frame", progress_html)
+        self.assertIn("300/300 frame", progress_html)
+        self.assertEqual(len(created_writers[0].frames), 300)
+        self.assertEqual(results[-1][1], created_writers[0].path)
+
 
 if __name__ == "__main__":
     unittest.main()

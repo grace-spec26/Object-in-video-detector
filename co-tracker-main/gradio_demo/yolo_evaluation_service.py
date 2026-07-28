@@ -10,6 +10,7 @@ import numpy as np
 
 
 DEFAULT_YOLO_EVALUATION_OUTPUT_DIR = Path(__file__).resolve().parent / "tmp"
+YOLO_EVALUATION_MAX_PROGRESS_UPDATES = 100
 
 
 class YoloEvaluationError(ValueError):
@@ -295,6 +296,24 @@ def _error_output(message, processed=0, total=0):
     return format_yolo_evaluation_progress_html(processed, total, message, state="error"), None
 
 
+def should_emit_yolo_frame_progress(processed, total):
+    try:
+        processed_count = int(processed or 0)
+        total_count = int(total or 0)
+    except (TypeError, ValueError):
+        return False
+    if processed_count <= 0 or total_count <= 0:
+        return False
+    if processed_count == 1 or processed_count >= total_count:
+        return True
+    update_interval = max(
+        1,
+        (total_count + YOLO_EVALUATION_MAX_PROGRESS_UPDATES - 1)
+        // YOLO_EVALUATION_MAX_PROGRESS_UPDATES,
+    )
+    return processed_count % update_interval == 0
+
+
 def _preview_yolo_model_on_video_from_reader(
     resolved_video_path,
     resolved_model_path,
@@ -326,11 +345,6 @@ def _preview_yolo_model_on_video_from_reader(
     output_frames = []
     fallback_names = getattr(model, "names", None)
     for frame_index, frame in enumerate(frames, start=1):
-        yield format_yolo_evaluation_progress_html(
-            frame_index - 1,
-            total_frames,
-            f"Processing frame {frame_index}/{total_frames}.",
-        ), None
         try:
             result = run_yolo_on_frame(model, frame)
             output_frames.append(draw_yolo_detections(frame, result, fallback_names=fallback_names))
@@ -338,11 +352,12 @@ def _preview_yolo_model_on_video_from_reader(
             message = f"YOLO preview failed while processing frame {frame_index}/{total_frames}: {exc}"
             yield _error_output(message, frame_index - 1, total_frames)
             return
-        yield format_yolo_evaluation_progress_html(
-            frame_index,
-            total_frames,
-            f"Processed {frame_index}/{total_frames} frame(s).",
-        ), None
+        if should_emit_yolo_frame_progress(frame_index, total_frames):
+            yield format_yolo_evaluation_progress_html(
+                frame_index,
+                total_frames,
+                f"Processed {frame_index}/{total_frames} frame(s).",
+            ), None
 
     try:
         output_video_path = write_yolo_evaluation_video(
@@ -398,11 +413,6 @@ def _preview_yolo_model_on_video_streaming(
             if frame is None:
                 break
 
-            yield format_yolo_evaluation_progress_html(
-                frame_index - 1,
-                total_frames,
-                f"Processing frame {frame_index}/{total_frames}.",
-            ), None
             try:
                 result = run_yolo_on_frame(model, frame)
                 output_frame = draw_yolo_detections(frame, result, fallback_names=fallback_names)
@@ -415,11 +425,12 @@ def _preview_yolo_model_on_video_streaming(
                 return
 
             processed_count = frame_index
-            yield format_yolo_evaluation_progress_html(
-                processed_count,
-                total_frames,
-                f"Processed {processed_count}/{total_frames} frame(s).",
-            ), None
+            if should_emit_yolo_frame_progress(processed_count, total_frames):
+                yield format_yolo_evaluation_progress_html(
+                    processed_count,
+                    total_frames,
+                    f"Processed {processed_count}/{total_frames} frame(s).",
+                ), None
     finally:
         capture.release()
         if writer is not None:

@@ -300,6 +300,24 @@ class GradioAppWiringTest(unittest.TestCase):
         self.assertIn("fn = preview_yolo_model_on_video", match.group(1))
         self.assertNotIn("queue = False", match.group(1))
 
+    def test_yolo_evaluation_preview_button_uses_custom_progress_display(self):
+        app_source = APP_PATH.read_text()
+        match = re.search(r"evaluation_preview_button\.click\((.*?)\n\s*\)", app_source, re.DOTALL)
+
+        self.assertIsNotNone(match)
+        self.assertIn('show_progress = "hidden"', match.group(1))
+
+    def test_app_bypasses_proxy_for_gradio_startup_events(self):
+        app_source = APP_PATH.read_text()
+
+        bypass_index = app_source.find("ensure_localhost_no_proxy()")
+        launch_index = app_source.find("demo.launch(")
+        self.assertGreater(bypass_index, -1)
+        self.assertGreater(launch_index, -1)
+        self.assertLess(bypass_index, launch_index)
+        self.assertIn('"127.0.0.1"', app_source)
+        self.assertIn('"localhost"', app_source)
+
     def test_layout_runtime_exposes_fourth_step_components_to_callbacks(self):
         ui_layout_namespace = runpy.run_path(UI_LAYOUT_PATH)
         captured = {}
