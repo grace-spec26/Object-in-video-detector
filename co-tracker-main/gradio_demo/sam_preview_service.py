@@ -19,6 +19,7 @@ try:
         visible_labeled_points_for_frame,
     )
     from .refinement_helpers import pending_refinement_points
+    from .sam2_image_runtime import load_sam2_predictor, resolve_sam2_model_option
     from .tracking_helpers import parse_frame_skip_count, should_process_frame_for_skip
 except ImportError:
     from export_helpers import (
@@ -27,6 +28,7 @@ except ImportError:
         visible_labeled_points_for_frame,
     )
     from refinement_helpers import pending_refinement_points
+    from sam2_image_runtime import load_sam2_predictor, resolve_sam2_model_option
     from tracking_helpers import parse_frame_skip_count, should_process_frame_for_skip
 
 
@@ -65,7 +67,6 @@ DEFAULT_SAM_IMAGE_MODEL = "sam2.1_hiera_small.pt"
 SAM_PREVIEW_RUNTIME_READY_WAIT_SECONDS = 8.0
 SAM_PREVIEW_RUNTIME_POLL_SECONDS = 0.1
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-MOBILE_SAM_ROOT = PROJECT_ROOT / "MobileSAM-master"
 sam_preview_runtime_lock = threading.Lock()
 sam_preview_runtimes = {}
 sam_preview_preload_lock = threading.Lock()
@@ -101,11 +102,6 @@ def format_sam_model_progress_html(percent, message, color="#2563eb"):
 
 
 def resolve_sam_preview_model_option(model_name):
-    if str(MOBILE_SAM_ROOT) not in sys.path:
-        sys.path.insert(0, str(MOBILE_SAM_ROOT))
-
-    from sam2_coordinate_wrapper import resolve_sam2_model_option
-
     return resolve_sam2_model_option(model_name)
 
 
@@ -322,11 +318,6 @@ def get_sam_preview_runtime(sam_model):
     runtime = get_loaded_sam_preview_runtime(model_name)
     if runtime is not None:
         return runtime
-
-    if str(MOBILE_SAM_ROOT) not in sys.path:
-        sys.path.insert(0, str(MOBILE_SAM_ROOT))
-
-    from sam2_coordinate_wrapper import load_sam2_predictor, resolve_sam2_model_option
 
     model_option = resolve_sam2_model_option(model_name)
     predictor, device = load_sam2_predictor(

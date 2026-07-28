@@ -730,9 +730,27 @@ class GradioSamPreviewTest(unittest.TestCase):
         self.assertIn("local placeholder", progress_html)
         self.assertNotIn("Preparing SAM2.1 Hiera Large", progress_html)
 
+    def test_sam_preview_service_does_not_import_deleted_sam2_wrapper(self):
+        service_source = Path(sam_preview_service.__file__).read_text()
+
+        self.assertNotIn("sam2_coordinate_wrapper", service_source)
+        self.assertNotIn("MOBILE_SAM_ROOT", service_source)
+
+    def test_sam_preview_model_option_uses_current_sam2_checkpoint_path_without_wrapper(self):
+        model_name = "sam2.1_hiera_tiny.pt"
+        with mock.patch.dict(sys.modules, {"sam2_coordinate_wrapper": None}):
+            model_option = app.resolve_sam_preview_model_option(model_name)
+
+        self.assertEqual(model_option["name"], model_name)
+        self.assertEqual(model_option["label"], "SAM2.1 Hiera Tiny")
+        self.assertEqual(
+            Path(model_option["checkpoint"]),
+            Path(__file__).resolve().parents[2] / "sam2" / "checkpoints" / model_name,
+        )
+        self.assertEqual(model_option["config"], "configs/sam2.1/sam2.1_hiera_t.yaml")
+
     def test_get_sam_preview_runtime_loads_without_holding_runtime_lock(self):
         model_name = "sam2.1_hiera_large.pt"
-        fake_sam2_wrapper = types.ModuleType("sam2_coordinate_wrapper")
         lock_was_available_during_load = []
 
         def fake_load_sam2_predictor(model_name, download_checkpoint):
@@ -742,16 +760,19 @@ class GradioSamPreviewTest(unittest.TestCase):
                 app.sam_preview_runtime_lock.release()
             return object(), "cpu"
 
-        fake_sam2_wrapper.load_sam2_predictor = fake_load_sam2_predictor
-        fake_sam2_wrapper.resolve_sam2_model_option = lambda model_name: {
-            "label": "SAM2.1 Hiera Large",
-        }
-
         with app.sam_preview_runtime_lock:
             original_runtimes = dict(app.sam_preview_runtimes)
             app.sam_preview_runtimes.pop(model_name, None)
         try:
-            with mock.patch.dict(sys.modules, {"sam2_coordinate_wrapper": fake_sam2_wrapper}):
+            with mock.patch.object(
+                sam_preview_service,
+                "load_sam2_predictor",
+                side_effect=fake_load_sam2_predictor,
+            ), mock.patch.object(
+                sam_preview_service,
+                "resolve_sam2_model_option",
+                return_value={"label": "SAM2.1 Hiera Large"},
+            ):
                 runtime = app.get_sam_preview_runtime(model_name)
         finally:
             with app.sam_preview_runtime_lock:
